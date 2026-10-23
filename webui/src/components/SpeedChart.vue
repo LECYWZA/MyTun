@@ -12,7 +12,7 @@
         </linearGradient>
       </defs>
       <path :d="areaPath" :fill="`url(#${gid}-d)`" />
-      <path :d="upPath" stroke="var(--bt-success)" fill="none" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round" opacity="0.85" />
+      <path :d="upPath" stroke="var(--bt-success)" fill="none" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="3 2.5" opacity="0.9" />
       <path :d="downPath" stroke="var(--bt-primary)" fill="none" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" />
     </svg>
   </div>
