@@ -178,13 +178,17 @@ func (c *Chat) SendText(sess *mux.Session, text, target string) (ChatMessage, er
 	return msg, nil
 }
 
-// SendFile streams a local file over a tunnel channel.
-func (c *Chat) SendFile(sess *mux.Session, path, target string) (FileRecord, error) {
+// SendFile streams a local file over a tunnel channel. displayName overrides the
+// name announced to the peer (used when the local path is a temporary upload).
+func (c *Chat) SendFile(sess *mux.Session, path, target string, displayName ...string) (FileRecord, error) {
 	st, err := os.Stat(path)
 	if err != nil {
 		return FileRecord{}, err
 	}
 	name := filepath.Base(path)
+	if len(displayName) > 0 && displayName[0] != "" {
+		name = filepath.Base(displayName[0])
+	}
 	meta := map[string]any{
 		"type":   mux.MetaFile,
 		"id":     strconv.FormatInt(time.Now().UnixNano(), 36),
@@ -243,7 +247,7 @@ func (c *Chat) ListFiles() []map[string]any {
 	if err != nil {
 		return nil
 	}
-	var out []map[string]any
+	out := make([]map[string]any, 0, len(entries))
 	for _, e := range entries {
 		if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue

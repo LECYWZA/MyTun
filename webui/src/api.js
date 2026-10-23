@@ -17,7 +17,7 @@ async function request(path, { method = 'GET', body, raw } = {}) {
     opts.headers = jsonHeaders
     opts.body = JSON.stringify(body)
   } else if (raw) {
-    opts.body = raw
+    opts.body = body // NOT raw: raw is just the "do not JSON-encode" flag
   }
   const res = await fetch(path, opts)
   const text = await res.text()

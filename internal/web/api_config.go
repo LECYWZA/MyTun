@@ -40,6 +40,19 @@ func (s *Server) loadConfig() (*ConfigPayload, error) {
 	settings := s.store.AllSettings()
 	delete(settings, "web_pass")
 	delete(settings, "jwt_secret")
+	// Never hand the UI a null array: it forces every consumer to special-case it.
+	if servers == nil {
+		servers = []store.ServerRow{}
+	}
+	if clients == nil {
+		clients = []store.ClientRow{}
+	}
+	if forwards == nil {
+		forwards = []store.ForwardRow{}
+	}
+	if proxies == nil {
+		proxies = []store.ProxyRow{}
+	}
 	return &ConfigPayload{Servers: servers, Clients: clients, Forwards: forwards, Proxies: proxies,
 		Settings: settings, Version: 2}, nil
 }

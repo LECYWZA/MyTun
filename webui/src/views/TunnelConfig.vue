@@ -208,7 +208,7 @@ function uid() {
 }
 
 function addServer() {
-  state.config.servers.push({ id: uid(), alias: '新服务端', bindHost: '0.0.0.0', port: 33891, password: '', commonName: 'mail.qq.com', enabled: false })
+  state.config.servers.push({ id: uid(), alias: '新服务端', bindHost: '0.0.0.0', port: 33891, password: '', commonName: 'mail.qq.com', enabled: true })
   store.markDirty()
 }
 
@@ -218,7 +218,7 @@ function removeServer(idx) {
 }
 
 function addClient() {
-  state.config.clients.push({ id: uid(), alias: '新上游', host: '', port: 33891, password: '', clientId: 'client-1', sni: 'mail.qq.com', enabled: false })
+  state.config.clients.push({ id: uid(), alias: '新上游', host: '', port: 33891, password: '', clientId: 'client-1', sni: 'mail.qq.com', enabled: true })
   store.markDirty()
 }
 

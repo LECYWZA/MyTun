@@ -27,15 +27,16 @@
         </el-tooltip>
 
         <div class="flex flex-col items-start justify-center leading-none" style="height: 38px">
-          <el-switch
-            v-model="sysproxyOn"
-            inline-prompt
-            :active-text="t('header.systemProxy')"
-            :inactive-text="t('header.systemProxy')"
-            style="width: 88px; height: 20px; --el-switch-on-color: var(--el-color-primary); --el-switch-off-color: var(--el-text-color-placeholder)"
-            :loading="sysproxyBusy"
-            @change="toggleSystemProxy"
-          />
+          <div class="flex items-center" style="gap: 6px; height: 20px">
+            <span style="font-size: 12px; color: var(--bt-text-secondary); white-space: nowrap">{{ t('header.systemProxy') }}</span>
+            <el-switch
+              v-model="sysproxyOn"
+              size="small"
+              style="--el-switch-on-color: var(--el-color-primary); --el-switch-off-color: var(--el-text-color-placeholder)"
+              :loading="sysproxyBusy"
+              @change="toggleSystemProxy"
+            />
+          </div>
           <span style="font-size: 10px; color: var(--bt-text-secondary); margin-top: 3px; transform: scale(.85); transform-origin: left; white-space: nowrap">
             {{ t('header.systemProxyDesc') }}
           </span>

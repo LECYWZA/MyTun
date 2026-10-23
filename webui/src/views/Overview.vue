@@ -149,7 +149,7 @@ async function clearLogs() {
     await api.clearLogs()
     recent.value = []
     state.audit = []
-    ElMessage.success(t('common.saved'))
+    ElMessage.success('审计日志已清空')
   } catch (e) {
     ElMessage.error(e.message)
   }

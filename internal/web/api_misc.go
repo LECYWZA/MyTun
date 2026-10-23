@@ -304,7 +304,7 @@ func (s *Server) handleFileSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = f.Close()
-	rec, err := s.chat.SendFile(sess, tmp, r.FormValue("target"))
+	rec, err := s.chat.SendFile(sess, tmp, r.FormValue("target"), hdr.Filename)
 	_ = os.Remove(tmp)
 	if err != nil {
 		writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error()})
@@ -314,7 +314,8 @@ func (s *Server) handleFileSend(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
-	name := strings.TrimPrefix(r.URL.Path, "/api/files/")
+	name := strings.TrimPrefix(strings.TrimSuffix(r.URL.Path, "/"), "/api/files")
+	name = strings.TrimPrefix(name, "/")
 	switch r.Method {
 	case http.MethodGet:
 		if name == "" {
