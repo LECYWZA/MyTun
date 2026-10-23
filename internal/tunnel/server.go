@@ -23,6 +23,8 @@ type ServerConfig struct {
 	CommonName string
 	CertDir   string
 	MaxClients int
+	// Limiter shapes outbound frames; nil disables shaping.
+	Limiter mux.Limiter
 }
 
 // Server is the public-side tunnel listener. A single port carries every
@@ -159,6 +161,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		_ = tcp.SetKeepAlivePeriod(30 * time.Second)
 	}
 	sess := mux.NewSession(conn, s.sealer, true)
+	sess.SetLimiter(s.cfg.Limiter)
 	sess.RemoteAddr = conn.RemoteAddr().String()
 	sess.OnChannel = func(ch *mux.Channel) {
 		if s.OnChannel != nil {

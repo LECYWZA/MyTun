@@ -167,6 +167,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.Handle("/api/proxies", auth(http.HandlerFunc(s.handleProxies)))
 	mux.Handle("/api/proxies/", auth(http.HandlerFunc(s.handleProxies)))
 	mux.Handle("/api/traffic-logs", auth(http.HandlerFunc(s.handleTrafficLogs)))
+	mux.Handle("/api/qos", auth(http.HandlerFunc(s.handleQoS)))
 	mux.Handle("/api/test-latency", auth(http.HandlerFunc(s.handleTestLatency)))
 	mux.Handle("/api/test-speed", auth(http.HandlerFunc(s.handleTestSpeed)))
 	mux.Handle("/api/check-port/", auth(http.HandlerFunc(s.handleCheckPort)))

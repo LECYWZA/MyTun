@@ -65,6 +65,8 @@ export const api = {
     return request('/api/file/send', { method: 'POST', body: fd, raw: true })
   },
   interfaces: () => request('/api/network-interfaces'),
+  qos: () => request('/api/qos'),
+  setQos: (payload) => request('/api/qos', { method: 'POST', body: payload }),
 }
 
 // Live event stream. Reconnects with backoff and fans events out to handlers.

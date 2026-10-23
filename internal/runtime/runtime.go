@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +18,7 @@ import (
 	"github.com/LECYWZA/mytun/internal/logging"
 	"github.com/LECYWZA/mytun/internal/mux"
 	"github.com/LECYWZA/mytun/internal/proxy"
+	"github.com/LECYWZA/mytun/internal/qos"
 	"github.com/LECYWZA/mytun/internal/store"
 	"github.com/LECYWZA/mytun/internal/sysproxy"
 	"github.com/LECYWZA/mytun/internal/tunnel"
@@ -46,6 +48,8 @@ type Runtime struct {
 	pxServer  *proxy.Proxy
 	pxClient  *proxy.Proxy
 
+	sched *qos.Scheduler
+
 	sysOn atomic.Bool
 
 	startedAt time.Time
@@ -68,6 +72,9 @@ func New(opts Options) *Runtime {
 	rt.pxClient = proxy.New("client", resolve, rt.onProxyEvent)
 	rt.pxServer.LocalBypass = func() bool { return rt.sysOn.Load() }
 	rt.pxClient.LocalBypass = func() bool { return rt.sysOn.Load() }
+
+	rt.sched = qos.New(qos.DefaultConfig())
+	rt.sched.Start()
 
 	rt.clients.OnChannel = func(sess *mux.Session, ch *mux.Channel) {
 		if rt.fwdClient.HandleChannel(sess, ch) {
@@ -204,7 +211,7 @@ func (rt *Runtime) Apply() error {
 		}
 		srv, err := tunnel.NewServer(tunnel.ServerConfig{
 			Alias: row.Alias, BindHost: row.BindHost, Port: row.Port, Password: row.Password,
-			CommonName: row.CommonName, CertDir: rt.opts.CertDir,
+			CommonName: row.CommonName, CertDir: rt.opts.CertDir, Limiter: rt.sched,
 		})
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("server %s: %v", row.Alias, err))
@@ -267,7 +274,7 @@ func (rt *Runtime) Apply() error {
 		}
 		desired[c.ID] = tunnel.ClientConnConfig{
 			ID: c.ID, Alias: c.Alias, TunnelHost: c.Host, TunnelPort: c.Port,
-			Password: c.Password, ClientID: c.ClientID, SNI: c.SNI,
+			Password: c.Password, ClientID: c.ClientID, SNI: c.SNI, Limiter: rt.sched,
 		}
 	}
 	// Remove links that are gone or changed.
@@ -346,6 +353,8 @@ func (rt *Runtime) Apply() error {
 		errs = append(errs, fmt.Sprintf("proxy client :%d: %s", port, e))
 	}
 
+	rt.applyQoS()
+
 	rt.lastApply.Store(time.Now().UnixMilli())
 	if len(errs) > 0 {
 		msg := strings.Join(errs, "; ")
@@ -355,6 +364,31 @@ func (rt *Runtime) Apply() error {
 	rt.applyErr.Store("")
 	return nil
 }
+
+// applyQoS rebuilds the shaping policy from settings.
+func (rt *Runtime) applyQoS() {
+	if rt.sched == nil || rt.opts.Store == nil {
+		return
+	}
+	cfg := qos.DefaultConfig()
+	cfg.Enabled = rt.opts.Store.GetSetting("qos_enabled", "false") == "true"
+	if v := rt.opts.Store.GetSetting("qos_mode", ""); v == "fixed" {
+		cfg.Mode = qos.ModeFixed
+	}
+	if v, err := strconv.Atoi(rt.opts.Store.GetSetting("qos_total_kbps", "0")); err == nil {
+		cfg.TotalKbps = v
+	}
+	if v, err := strconv.Atoi(rt.opts.Store.GetSetting("qos_interactive_percent", "0")); err == nil && v > 0 {
+		cfg.InteractivePercent = v
+	}
+	if v, err := strconv.Atoi(rt.opts.Store.GetSetting("qos_interactive_floor_kbps", "0")); err == nil && v > 0 {
+		cfg.InteractiveFloorKbps = v
+	}
+	rt.sched.Configure(cfg)
+}
+
+// QoSScheduler exposes the shaper for the console.
+func (rt *Runtime) QoSScheduler() *qos.Scheduler { return rt.sched }
 
 func filterRole(in []forward.Rule, role string) []forward.Rule {
 	out := make([]forward.Rule, 0, len(in))
@@ -389,6 +423,9 @@ func (rt *Runtime) Stop() {
 	rt.fwdClient.Stop()
 	rt.pxServer.Stop()
 	rt.pxClient.Stop()
+	if rt.sched != nil {
+		rt.sched.Close()
+	}
 }
 
 // Status describes live state for the UI.
@@ -423,6 +460,7 @@ func (rt *Runtime) Status() map[string]any {
 		"lastApply":     rt.lastApply.Load(),
 		"applyError":    stringOr(rt.applyErr.Load()),
 		"proxyConns":    rt.pxServer.ActiveConnections() + rt.pxClient.ActiveConnections(),
+		"qos":           rt.sched.Stats(),
 	}
 }
 

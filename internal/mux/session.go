@@ -47,6 +47,7 @@ type Channel struct {
 	localAddr  net.Addr
 	remoteAddr net.Addr
 	createdAt  time.Time
+	role       string
 	bytesIn    atomic.Int64
 	bytesOut   atomic.Int64
 	ackOnce    sync.Once
@@ -54,10 +55,17 @@ type Channel struct {
 }
 
 func newChannel(s *Session, id uint32, meta map[string]any) *Channel {
+	role := ""
+	if meta != nil {
+		if v, ok := meta["type"].(string); ok {
+			role = v
+		}
+	}
 	c := &Channel{
 		session:   s,
 		id:        id,
 		Meta:      meta,
+		role:      role,
 		ackCh:     make(chan bool, 1),
 		createdAt: time.Now(),
 	}
@@ -139,6 +147,11 @@ func (c *Channel) Write(b []byte) (int, error) {
 		if n > chunk {
 			n = chunk
 		}
+		// Fair-queue admission: blocking here is what keeps one bulk transfer
+		// from starving an interactive channel sharing the same tunnel.
+		if c.session.limiter != nil {
+			c.session.limiter.Admit(c.id, c.role, n)
+		}
 		if err := c.session.writeFrame(TypeData, c.id, b[written:written+n]); err != nil {
 			return written, err
 		}
@@ -168,6 +181,7 @@ func (c *Channel) Close() error {
 	c.cond.Broadcast()
 	c.mu.Unlock()
 
+	c.session.unregisterLimiter(c.id)
 	if !alreadyRemote {
 		_ = c.session.writeFrame(TypeClose, c.id, nil)
 		// Control frames must hit the wire immediately: without this the peer
@@ -214,6 +228,17 @@ func (c *Channel) SetDeadline(t time.Time) error      { return nil }
 func (c *Channel) SetReadDeadline(t time.Time) error  { return nil }
 func (c *Channel) SetWriteDeadline(t time.Time) error { return nil }
 
+// Limiter shapes outbound DATA frames. Implemented by internal/qos; kept as an
+// interface so the wire protocol package stays dependency-free.
+type Limiter interface {
+	// Admit blocks until n bytes may be sent on the channel.
+	Admit(id uint32, role string, n int) bool
+	// Register announces a channel and its role to the classifier.
+	Register(id uint32, role string)
+	// Unregister forgets a channel.
+	Unregister(id uint32)
+}
+
 // Session is one authenticated multiplexed tunnel connection.
 type Session struct {
 	conn     net.Conn
@@ -245,6 +270,9 @@ type Session struct {
 
 	lastActivity atomic.Int64
 	msgCount     atomic.Int64
+
+	// limiter optionally shapes outbound DATA frames (nil = unshaped).
+	limiter Limiter
 }
 
 // NewSession wires a Session over conn. buffered writes are used, so callers
@@ -269,6 +297,9 @@ func NewSession(conn net.Conn, sealer *Sealer, isServer bool) *Session {
 	s.dec = NewDecoder(conn, sealer, 64*1024)
 	return s
 }
+
+// SetLimiter attaches an outbound shaper. Safe to call before Run only.
+func (s *Session) SetLimiter(l Limiter) { s.limiter = l }
 
 // Role reports "server" or "client".
 func (s *Session) Role() string { return s.role }
@@ -353,7 +384,8 @@ func (s *Session) Run() error {
 			if v, ok := s.channels.Load(f.Channel); ok {
 				ch := v.(*Channel)
 				ch.markRemoteClose()
-				s.channels.Delete(f.Channel)
+				_ = ch
+				s.dropChannel(f.Channel)
 			}
 		case TypeCreateAck:
 			if v, ok := s.channels.Load(f.Channel); ok {
@@ -435,6 +467,9 @@ func (s *Session) handleCreate(f Frame) {
 	}
 	ch := newChannel(s, f.Channel, meta)
 	s.channels.Store(f.Channel, ch)
+	if s.limiter != nil {
+		s.limiter.Register(f.Channel, ch.role)
+	}
 	if s.OnChannel != nil {
 		go s.OnChannel(ch)
 	}
@@ -458,6 +493,9 @@ func (s *Session) OpenChannel(meta map[string]any) (*Channel, error) {
 	}
 	ch := newChannel(s, id, meta)
 	s.channels.Store(id, ch)
+	if s.limiter != nil {
+		s.limiter.Register(id, ch.role)
+	}
 	if err := s.enc.WriteFrameAndFlush(TypeCreate, id, payload); err != nil {
 		s.channels.Delete(id)
 		return nil, err
@@ -467,6 +505,13 @@ func (s *Session) OpenChannel(meta map[string]any) (*Channel, error) {
 
 func (s *Session) dropChannel(id uint32) {
 	s.channels.Delete(id)
+	s.unregisterLimiter(id)
+}
+
+func (s *Session) unregisterLimiter(id uint32) {
+	if s.limiter != nil {
+		s.limiter.Unregister(id)
+	}
 }
 
 // SendACK answers a CREATE with success/failure.

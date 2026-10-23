@@ -364,3 +364,54 @@ func (s *Server) handleCheckPort(w http.ResponseWriter, r *http.Request) {
 	_ = ln.Close()
 	writeJSON(w, 200, map[string]any{"port": port, "available": true})
 }
+
+// handleQoS reads or updates the fairness scheduler policy.
+//
+// Settings keys: qos_enabled, qos_mode, qos_total_kbps, qos_interactive_percent,
+// qos_interactive_floor_kbps. They live in the settings table so they survive
+// restarts and are exported with the rest of the configuration.
+func (s *Server) handleQoS(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, 200, s.rt.QoSScheduler().Stats())
+	case http.MethodPost:
+		var body struct {
+			Enabled             *bool   `json:"enabled"`
+			Mode                *string `json:"mode"`
+			TotalKbps           *int    `json:"totalKbps"`
+			InteractivePercent  *int    `json:"interactivePercent"`
+			InteractiveFloorKbps *int   `json:"interactiveFloorKbps"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, 400, map[string]any{"error": "bad json"})
+			return
+		}
+		set := func(k, v string) { _ = s.store.SetSetting(k, v) }
+		if body.Enabled != nil {
+			if *body.Enabled {
+				set("qos_enabled", "true")
+			} else {
+				set("qos_enabled", "false")
+			}
+		}
+		if body.Mode != nil && (*body.Mode == "auto" || *body.Mode == "fixed") {
+			set("qos_mode", *body.Mode)
+		}
+		if body.TotalKbps != nil && *body.TotalKbps >= 0 {
+			set("qos_total_kbps", strconv.Itoa(*body.TotalKbps))
+		}
+		if body.InteractivePercent != nil && *body.InteractivePercent > 0 && *body.InteractivePercent <= 90 {
+			set("qos_interactive_percent", strconv.Itoa(*body.InteractivePercent))
+		}
+		if body.InteractiveFloorKbps != nil && *body.InteractiveFloorKbps > 0 {
+			set("qos_interactive_floor_kbps", strconv.Itoa(*body.InteractiveFloorKbps))
+		}
+		if err := s.rt.Apply(); err != nil {
+			writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error(), "qos": s.rt.QoSScheduler().Stats()})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true, "qos": s.rt.QoSScheduler().Stats()})
+	default:
+		writeJSON(w, 405, map[string]any{"error": "GET/POST only"})
+	}
+}

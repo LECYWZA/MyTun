@@ -22,6 +22,8 @@ type ClientConnConfig struct {
 	Password   string
 	ClientID   string
 	SNI        string
+	// Limiter shapes outbound frames; nil disables shaping.
+	Limiter mux.Limiter
 }
 
 // ConnStatus enumerates client link states.
@@ -206,6 +208,7 @@ func (c *ClientConn) dialAndServe() error {
 	_ = tlsConn.SetDeadline(time.Time{})
 
 	sess := mux.NewSession(tlsConn, c.sealer, false)
+	sess.SetLimiter(c.cfg.Limiter)
 	sess.RemoteAddr = raw.RemoteAddr().String()
 	sess.ClientID = c.cfg.ClientID
 	sess.OnChannel = func(ch *mux.Channel) {
