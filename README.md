@@ -8,6 +8,9 @@
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20Android-blue)
 ![Go](https://img.shields.io/badge/Go-1.24%2B-00ADD8)
 
+![概览](docs/screenshots/overview.png)
+![混合代理](docs/screenshots/proxies.png)
+
 ---
 
 ## 这是什么
