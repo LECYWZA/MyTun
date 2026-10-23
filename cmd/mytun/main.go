@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -134,8 +135,19 @@ func main() {
 	// polling, and lets us detect a dead peer quickly.
 	ticker := time.NewTicker(3 * time.Second)
 	go func() {
+		n := 0
 		for range ticker.C {
 			console.Broadcast("status", rt.Status())
+			n++
+			// Housekeeping every ~20 minutes keeps the audit table bounded on a
+			// long-running box (this is one of the ways "the console gets slow
+			// after a few days" happens).
+			if n%(20*60/3) == 0 {
+				if err := st.PruneAudit(20000); err != nil {
+					log.Printf("审计日志清理失败: %v", err)
+				}
+				runtime.GC()
+			}
 		}
 	}()
 
