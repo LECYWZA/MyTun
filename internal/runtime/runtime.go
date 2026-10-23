@@ -493,12 +493,21 @@ func (rt *Runtime) Sessions() map[string]*mux.Session {
 func (rt *Runtime) ClientManager() *tunnel.Manager { return rt.clients }
 
 // EnableSystemProxy toggles the OS-level proxy.
+//
+// Enabling also starts a detached watchdog process: if this process is killed
+// (Task Manager, kill -9, crash) the watchdog notices the console is gone and
+// restores the previous proxy settings, so the machine never stays offline.
 func (rt *Runtime) EnableSystemProxy(enable bool, host string, port int) error {
 	if enable {
 		if err := sysproxy.Enable(host, port); err != nil {
 			return err
 		}
 		rt.sysOn.Store(true)
+		if rt.opts.DataDir != "" && rt.opts.APIPort > 0 {
+			if err := sysproxy.StartWatchdog(rt.opts.DataDir, rt.opts.APIPort); err != nil {
+				log.Printf("[sysproxy] watchdog start failed: %v", err)
+			}
+		}
 		return nil
 	}
 	if err := sysproxy.Disable(); err != nil {
@@ -506,6 +515,15 @@ func (rt *Runtime) EnableSystemProxy(enable bool, host string, port int) error {
 	}
 	rt.sysOn.Store(false)
 	return nil
+}
+
+// ResumeSystemProxy re-applies the proxy state after a restart when the config
+// says it should be on (used by --no-autostart=false boot paths).
+func (rt *Runtime) ResumeSystemProxy(enabled bool, host string, port int) error {
+	if !enabled {
+		return nil
+	}
+	return rt.EnableSystemProxy(true, host, port)
 }
 
 // SystemProxyEnabled reports the toggle state.

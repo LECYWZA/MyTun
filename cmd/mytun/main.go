@@ -39,6 +39,12 @@ func main() {
 	generateOnly := false
 	dnsServer := ""
 
+	// Watchdog mode runs before any normal initialisation.
+	if healthURL, dataDir, ok := sysproxy.IsWatchdogArgs(os.Args[1:]); ok {
+		sysproxy.RunWatchdog(healthURL, dataDir)
+		return
+	}
+
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -124,6 +130,20 @@ func main() {
 		return
 	}
 
+	// A backup file on disk means the previous run died without restoring the
+	// proxy. Restore it now, then re-apply whatever the config asked for.
+	if sysproxy.HasBackup() {
+		log.Println("检测到上次未正常退出留下的系统代理，正在还原…")
+		if err := sysproxy.Disable(); err != nil {
+			log.Printf("还原系统代理失败: %v", err)
+		}
+	}
+	if st.GetSetting("sysproxy_wanted", "false") == "true" {
+		if err := rt.EnableSystemProxy(true, "127.0.0.1", atoiSafe(st.GetSetting("sysproxy_port", "0"))); err != nil {
+			log.Printf("恢复系统代理失败: %v", err)
+		}
+	}
+
 	if err := rt.Start(); err != nil {
 		log.Printf("启动隧道组件时出现问题: %v", err)
 	}
@@ -187,6 +207,17 @@ func applyDNS(server string) {
 		},
 	}
 	log.Printf("DNS 解析强制走 %s", addr)
+}
+
+func atoiSafe(s string) int {
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return n
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
 }
 
 func usage() {

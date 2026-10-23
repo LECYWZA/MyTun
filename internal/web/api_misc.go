@@ -82,12 +82,15 @@ func (s *Server) handleSystemProxy(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 500, map[string]any{"error": err.Error()})
 			return
 		}
+		_ = s.store.SetSetting("sysproxy_wanted", "true")
+		_ = s.store.SetSetting("sysproxy_port", strconv.Itoa(body.Port))
 		writeJSON(w, 200, map[string]any{"ok": true, "enabled": true, "endpoint": sysproxy.ServerString(body.Host, body.Port)})
 	case "disable":
 		if err := s.rt.EnableSystemProxy(false, "", 0); err != nil {
 			writeJSON(w, 500, map[string]any{"error": err.Error()})
 			return
 		}
+		_ = s.store.SetSetting("sysproxy_wanted", "false")
 		writeJSON(w, 200, map[string]any{"ok": true, "enabled": false})
 	case "status":
 		residue, detail := sysproxy.Residue()

@@ -64,6 +64,13 @@ func loadBackup() (Backup, bool) {
 
 func clearBackup() { _ = os.Remove(backupPath()) }
 
+// HasBackup reports whether a previous Enable() has not been undone. A backup
+// left on disk means the process did not shut down cleanly.
+func HasBackup() bool {
+	_, ok := loadBackup()
+	return ok
+}
+
 func timeNow() time.Time { return time.Now() }
 
 // ServerString renders host:port the way each platform expects.
