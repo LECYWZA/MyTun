@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MyTun</string>
+    <string name="notif_channel">MyTun 后台服务</string>
+    <string name="notif_title">MyTun 隧道运行中</string>
+    <string name="notif_text">单端口多隧道 · 点击打开控制台</string>
+</resources>

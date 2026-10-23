@@ -1,0 +1,22 @@
+services:
+  mytun:
+    build:
+      context: .
+      args:
+        VERSION: ${MYTUN_VERSION:-dev}
+    image: mytun:latest
+    container_name: mytun
+    # Host networking is required: port maps and proxy listeners are created
+    # dynamically and would otherwise need dozens of -p flags.
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+    environment:
+      - MYTUN_HOME=/data
+    command: ["--data", "/data", "--host", "0.0.0.0", "--port", "8899"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8899/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

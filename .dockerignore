@@ -1,0 +1,9 @@
+.git
+dist
+bin
+webui/node_modules
+android/app/build
+android/.gradle
+android/app/src/main/assets/mytun-core-*
+data
+.keystore

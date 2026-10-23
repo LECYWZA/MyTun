@@ -1,0 +1,25 @@
+# build outputs
+dist/
+bin/
+*.exe
+android/app/src/main/assets/mytun-core-*
+android/app/build/
+android/.gradle/
+.keystore/
+
+# runtime data
+data/
+*.db
+*.db-shm
+*.db-wal
+files/
+
+# frontend
+webui/node_modules/
+webui/dist/
+
+# editor / os
+.DS_Store
+*.swp
+.idea/
+.vscode/

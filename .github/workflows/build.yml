@@ -1,0 +1,114 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  binaries:
+    name: build-${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: windows, goarch: amd64, ext: .exe }
+          - { goos: windows, goarch: arm64, ext: .exe }
+          - { goos: linux,   goarch: amd64, ext: "" }
+          - { goos: linux,   goarch: arm64, ext: "" }
+          - { goos: linux,   goarch: arm,   ext: "", goarm: "7" }
+          - { goos: darwin,  goarch: amd64, ext: "" }
+          - { goos: darwin,  goarch: arm64, ext: "" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.26' }
+
+      - name: build webui
+        run: |
+          cd webui
+          npm install --no-audit --no-fund --registry=https://registry.npmmirror.com
+          npm run build
+
+      - name: build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: '0'
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w -X main.Version=${GITHUB_REF_NAME}" \
+            -o "dist/mytun-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}" ./cmd/mytun
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mytun-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+
+  android:
+    name: android-apk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.26' }
+      - uses: android-actions/setup-android@v3
+
+      - name: build webui
+        run: |
+          cd webui
+          npm install --no-audit --no-fund
+          npm run build
+
+      - name: cross-compile core
+        env: { CGO_ENABLED: '0' }
+        run: |
+          mkdir -p android/app/src/main/assets
+          GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -o android/app/src/main/assets/mytun-core-arm64 ./cmd/mytun
+          GOOS=linux GOARCH=arm GOARM=7 go build -ldflags "-s -w" -o android/app/src/main/assets/mytun-core-arm ./cmd/mytun
+
+      - name: keystore
+        run: |
+          mkdir -p .keystore
+          keytool -genkeypair -noprompt -keystore .keystore/mytun.jks -alias mytun \
+            -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android \
+            -dname "CN=MyTun, OU=Dev, O=LECYWZA, L=Local, ST=Local, C=CN"
+
+      - name: assemble
+        working-directory: android
+        env:
+          MYTUN_KEYSTORE: ${{ github.workspace }}/.keystore/mytun.jks
+          MYTUN_KS_PASS: android
+          MYTUN_KEY_ALIAS: mytun
+          MYTUN_KEY_PASS: android
+        run: |
+          if [ -x ./gradlew ]; then ./gradlew --no-daemon assembleRelease; else
+            gradle --no-daemon assembleRelease || (cd .. && gradle wrapper --gradle-version 8.10.2 && ./android/gradlew -p android assembleRelease)
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mytun-android-apk
+          path: android/app/build/outputs/apk/release/*.apk
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [binaries, android]
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
