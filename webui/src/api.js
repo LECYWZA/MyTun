@@ -120,6 +120,8 @@ export const api = {
   wsTicket: () => request('/api/ws-ticket'),
   exportAuditUrl: (limit = 100000) => `/api/traffic-logs/export?limit=${limit}`,
   trafficSeries: (minutes = 60) => request(`/api/stats/traffic?minutes=${minutes}`),
+  speed: () => request('/api/speed'),
+  revealSecret: (kind, id) => request(`/api/config/secret?kind=${kind}&id=${encodeURIComponent(id)}`),
 }
 
 // Live event stream. Reconnects with backoff and fans events out to handlers.

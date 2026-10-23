@@ -84,6 +84,18 @@ func (c *Channel) ID() uint32 { return c.id }
 func (c *Channel) CreatedAt() time.Time { return c.createdAt }
 
 // BytesIn/BytesOut report transferred volume.
+// Process-wide byte counters. The data path only pays one extra atomic add per
+// chunk; the console samples these once a second to draw live speed graphs.
+var (
+	totalIn  atomic.Int64
+	totalOut atomic.Int64
+)
+
+// TrafficTotals returns cumulative bytes read from and written to tunnels.
+func TrafficTotals() (in, out int64) {
+	return totalIn.Load(), totalOut.Load()
+}
+
 func (c *Channel) BytesIn() int64  { return c.bytesIn.Load() }
 func (c *Channel) BytesOut() int64 { return c.bytesOut.Load() }
 
@@ -122,6 +134,7 @@ func (c *Channel) Read(b []byte) (int, error) {
 				c.readOff = 0
 			}
 			c.bytesIn.Add(int64(n))
+			totalIn.Add(int64(n))
 			return n, nil
 		}
 		if c.closed {
@@ -158,6 +171,7 @@ func (c *Channel) Write(b []byte) (int, error) {
 		written += n
 	}
 	c.bytesOut.Add(int64(written))
+	totalOut.Add(int64(written))
 	// Low-latency path: ship small interactive writes immediately instead of
 	// waiting for the 64 KiB buffer to fill. Bulk transfers keep buffering so
 	// they stay at line rate.

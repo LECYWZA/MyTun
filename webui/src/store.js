@@ -73,6 +73,7 @@ export function useStore() {
       forwards: cfg.forwards || [],
       proxies: cfg.proxies || [],
       settings: cfg.settings || {},
+      revision: cfg.revision || 0,
     }
     state.dirty = false
   }

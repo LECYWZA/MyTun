@@ -57,7 +57,7 @@
             <el-input v-model="p.user" @input="store.markDirty()" />
           </el-form-item>
           <el-form-item :label="t('proxies.pass')" class="!mb-0">
-            <el-input v-model="p.pass" show-password @input="store.markDirty()" />
+            <el-input v-model="p.pass" show-password @focus="reveal(p)" @input="store.markDirty()" />
           </el-form-item>
         </div>
 
@@ -99,6 +99,14 @@ import { t } from '../i18n'
 import { useStore } from '../store'
 
 const store = useStore()
+
+async function reveal(row) {
+  if (row.pass !== MASK || !row.id) return
+  try {
+    const r = await api.revealSecret('proxy', row.id)
+    if (r && typeof r.password === 'string') row.pass = r.password
+  } catch { /* keep the mask */ }
+}
 const state = store.state
 const saving = ref(false)
 

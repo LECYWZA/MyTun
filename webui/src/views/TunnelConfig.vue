@@ -32,7 +32,7 @@
             <el-input-number v-model="s.port" :min="1" :max="65535" controls-position="right" class="!w-full" @change="store.markDirty()" />
           </el-form-item>
           <el-form-item :label="t('common.password')" class="!mb-0">
-            <el-input v-model="s.password" show-password @input="store.markDirty()" />
+            <el-input v-model="s.password" show-password @focus="reveal(s, 'server')" @input="store.markDirty()" />
           </el-form-item>
           <el-form-item :label="t('config.commonName')" class="!mb-0">
             <el-input v-model="s.commonName" @input="store.markDirty()" />
@@ -63,7 +63,7 @@
             <el-input-number v-model="c.port" :min="1" :max="65535" controls-position="right" class="!w-full" @change="store.markDirty()" />
           </el-form-item>
           <el-form-item :label="t('common.password')" class="!mb-0">
-            <el-input v-model="c.password" show-password @input="store.markDirty()" />
+            <el-input v-model="c.password" show-password @focus="reveal(c, 'client')" @input="store.markDirty()" />
           </el-form-item>
           <el-form-item :label="t('config.clientId')" class="!mb-0">
             <el-input v-model="c.clientId" @input="store.markDirty()" />
@@ -157,6 +157,8 @@ import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Delete, Plus } from '@element-plus/icons-vue'
 import { api } from '../api'
+
+const MASK = '********'
 import { t } from '../i18n'
 import { useStore } from '../store'
 
@@ -246,6 +248,17 @@ async function save() {
 }
 
 const importInput = ref(null)
+
+// The API only returns a mask for passwords. When the user focuses a password
+// field we fetch the real value so they can read or copy it (a client password
+// has to match the server's, which is how the two get compared).
+async function reveal(row, kind) {
+  if (row.password !== MASK || !row.id) return
+  try {
+    const r = await api.revealSecret(kind, row.id)
+    if (r && typeof r.password === 'string') row.password = r.password
+  } catch { /* keep the mask on failure */ }
+}
 
 function exportConfig() {
   const blob = new Blob([JSON.stringify(state.config, null, 2)], { type: 'application/json' })

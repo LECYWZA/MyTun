@@ -19,6 +19,7 @@ import (
 	"github.com/LECYWZA/mytun/internal/mux"
 	"github.com/LECYWZA/mytun/internal/proxy"
 	"github.com/LECYWZA/mytun/internal/qos"
+	"github.com/LECYWZA/mytun/internal/speed"
 	"github.com/LECYWZA/mytun/internal/store"
 	"github.com/LECYWZA/mytun/internal/sysproxy"
 	"github.com/LECYWZA/mytun/internal/tunnel"
@@ -49,6 +50,7 @@ type Runtime struct {
 	pxClient  *proxy.Proxy
 
 	sched *qos.Scheduler
+	spd   *speed.Meter
 
 	sysOn atomic.Bool
 
@@ -65,6 +67,11 @@ func New(opts Options) *Runtime {
 		sessions: map[string]*mux.Session{},
 		clients:  tunnel.NewManager(),
 	}
+	// Live traffic meter: samples the mux byte counters once per second.
+	rt.spd = speed.New(func() (up, down int64) {
+		in, out := mux.TrafficTotals()
+		return out, in // "up" = written into tunnels, "down" = read from them
+	})
 	resolve := rt.resolveSession
 	rt.fwdServer = forward.New("server", resolve, rt.onForwardEvent)
 	rt.fwdClient = forward.New("client", resolve, rt.onForwardEvent)
@@ -155,6 +162,7 @@ func (rt *Runtime) onProxyEvent(ev proxy.Event) {
 // Start brings up every enabled component from the database.
 func (rt *Runtime) Start() error {
 	rt.startedAt = time.Now()
+	rt.spd.Start()
 	if rt.opts.AutoStart {
 		return rt.Apply()
 	}
@@ -426,7 +434,13 @@ func (rt *Runtime) Stop() {
 	if rt.sched != nil {
 		rt.sched.Close()
 	}
+	if rt.spd != nil {
+		rt.spd.Stop()
+	}
 }
+
+// Speed exposes the live traffic meter.
+func (rt *Runtime) Speed() *speed.Meter { return rt.spd }
 
 // Status describes live state for the UI.
 func (rt *Runtime) Status() map[string]any {

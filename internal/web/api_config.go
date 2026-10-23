@@ -43,7 +43,11 @@ func (s *Server) loadConfig() (*ConfigPayload, error) {
 	if err != nil {
 		return nil, err
 	}
-	rev, _ := strconv.ParseInt(s.store.GetSetting("config_revision", "0"), 10, 64)
+	// Seed a non-zero revision: 0 is reserved for "caller did not send one".
+	if s.store.GetSetting("config_revision", "") == "" {
+		_ = s.store.SetSetting("config_revision", "1")
+	}
+	rev, _ := strconv.ParseInt(s.store.GetSetting("config_revision", "1"), 10, 64)
 	settings := s.store.AllSettings()
 	delete(settings, "web_pass")
 	delete(settings, "jwt_secret")
@@ -252,6 +256,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"throttled": throttled,
 		"oldestTs":  s.store.OldestAuditTS(),
 	}
+	if m := s.rt.Speed(); m != nil {
+		up, down := m.Current()
+		st["speed"] = map[string]float64{"up": up, "down": down}
+	}
 	st["auditPolicy"] = map[string]string{
 		"maxRows":    s.store.GetSetting("audit_max_rows", "50000"),
 		"retainDays": s.store.GetSetting("audit_retain_days", "7"),
@@ -292,6 +300,54 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// handleRevealSecret returns the real tunnel password for one row. The config
+// payload only carries a mask, so the UI calls this when the user focuses a
+// password field (to see or copy it) instead of shipping every secret to the
+// browser on every poll.
+func (s *Server) handleRevealSecret(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET only"})
+		return
+	}
+	kind := r.URL.Query().Get("kind")
+	id := r.URL.Query().Get("id")
+	var pw, err = "", error(nil)
+	switch kind {
+	case "server":
+		var rows []store.ServerRow
+		rows, err = s.store.Servers()
+		for _, x := range rows {
+			if x.ID == id {
+				pw = x.Password
+			}
+		}
+	case "client":
+		var rows []store.ClientRow
+		rows, err = s.store.Clients()
+		for _, x := range rows {
+			if x.ID == id {
+				pw = x.Password
+			}
+		}
+	case "proxy":
+		var rows []store.ProxyRow
+		rows, err = s.store.Proxies()
+		for _, x := range rows {
+			if x.ID == id {
+				pw = x.Pass
+			}
+		}
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "unknown kind"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"password": pw})
 }
 
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {

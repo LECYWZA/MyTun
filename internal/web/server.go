@@ -235,6 +235,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.Handle("/api/traffic-logs/prune", auth(http.HandlerFunc(s.handlePruneLogs)))
 	mux.Handle("/api/traffic-logs/export", auth(http.HandlerFunc(s.handleAuditExport)))
 	mux.Handle("/api/stats/traffic", auth(http.HandlerFunc(s.handleTrafficSeries)))
+	mux.Handle("/api/speed", auth(http.HandlerFunc(s.handleSpeed)))
+	mux.Handle("/api/config/secret", auth(http.HandlerFunc(s.handleRevealSecret)))
 	mux.Handle("/api/qos", auth(http.HandlerFunc(s.handleQoS)))
 	mux.Handle("/api/test-latency", auth(http.HandlerFunc(s.handleTestLatency)))
 	mux.Handle("/api/test-speed", auth(http.HandlerFunc(s.handleTestSpeed)))

@@ -73,7 +73,8 @@
       </div>
     </header>
 
-    <main class="bt-main mx-auto py-6 px-6">
+    <div class="bt-shell-body">
+    <main class="bt-main py-6 px-6">
       <el-alert
         v-if="sysproxyStatus.residue"
         type="warning"
@@ -89,6 +90,8 @@
       </el-alert>
       <router-view />
     </main>
+      <SpeedRail v-if="state.authenticated" />
+    </div>
   </div>
 </template>
 
@@ -98,6 +101,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { SwitchButton } from '@element-plus/icons-vue'
 import Login from './components/Login.vue'
+import SpeedRail from './components/SpeedRail.vue'
 import { api } from './api'
 import { t, locale, toggleLocale } from './i18n'
 import { useStore } from './store'

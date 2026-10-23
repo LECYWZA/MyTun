@@ -186,7 +186,17 @@ const dict = {
       target: '接收方',
       targetAuto: '留空则发给唯一在线客户端',
     },
-  },
+    rail: {
+      title: '实时速度',
+      live: '采样中',
+      idle: '无数据',
+      up: '上传',
+      down: '下载',
+      min5: '近 5 分钟',
+      min15: '近 15 分钟',
+      min30: '近 30 分钟',
+      total: '本次累计',
+    },
     qos: {
       title: '流量调度（公平分流）',
       subtitle: '开启后自动识别「下载型」与「浏览型」通道：下载被压到自己的份额，浏览与交互流量保留保底带宽，避免一条隧道被单个大流量占满。',
@@ -207,6 +217,7 @@ const dict = {
       sent: '已传输',
       none: '暂无活跃通道',
     },
+  },
   en: {
     nav: {
       overview: 'Overview',
@@ -384,6 +395,17 @@ const dict = {
       download: 'Download',
       target: 'Recipient',
       targetAuto: 'Empty = the only online client',
+    },
+    rail: {
+      title: 'Live throughput',
+      live: 'sampling',
+      idle: 'no data',
+      up: 'Up',
+      down: 'Down',
+      min5: 'Last 5 min',
+      min15: 'Last 15 min',
+      min30: 'Last 30 min',
+      total: 'Session total',
     },
     qos: {
       title: 'Traffic scheduling (fair queuing)',
