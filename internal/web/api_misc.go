@@ -53,6 +53,44 @@ func (s *Server) handleTrafficLogs(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handlePruneLogs trims the audit table on demand (the daemon also does this on
+// a timer, this endpoint just makes it observable/testable).
+func (s *Server) handlePruneLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, 405, map[string]any{"error": "POST only"})
+		return
+	}
+	keep := 20000
+	if v := r.URL.Query().Get("keep"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			keep = n
+		}
+	}
+	beforeRows := s.store.AuditCount()
+	beforeBytes := s.store.DBSizeBytes()
+	policy := store.AuditPolicy{
+		MaxRows:    keep,
+		RetainDays: atoiOrDefault(r.URL.Query().Get("days"), atoiOrDefault(s.store.GetSetting("audit_retain_days", "7"), 7)),
+	}
+	removed, err := s.store.PruneAuditPolicy(policy)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		return
+	}
+	_ = s.store.Checkpoint()
+	// Deleting rows only marks pages free; VACUUM is what actually shrinks the
+	// file. Only worth it when something was really removed.
+	if removed > 0 {
+		_ = s.store.Vacuum()
+	}
+	writeJSON(w, 200, map[string]any{
+		"ok": true, "removed": removed, "keep": keep, "retainDays": policy.RetainDays,
+		"rowsBefore": beforeRows, "rowsAfter": s.store.AuditCount(),
+		"bytesBefore": beforeBytes, "bytesAfter": s.store.DBSizeBytes(),
+		"oldestTs": s.store.OldestAuditTS(),
+	})
+}
+
 func (s *Server) handleSystemProxy(w http.ResponseWriter, r *http.Request) {
 	action := strings.TrimPrefix(r.URL.Path, "/api/system-proxy/")
 	var body struct {
@@ -315,4 +353,18 @@ func (s *Server) anySession(clientID string) *mux.Session {
 		return sess
 	}
 	return nil
+}
+
+func atoiOrDefault(s string, def int) int {
+	if s == "" {
+		return def
+	}
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return def
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
 }

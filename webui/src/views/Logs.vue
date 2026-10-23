@@ -6,6 +6,10 @@
         <p class="text-sm mt-1" style="color: var(--bt-text-secondary)">{{ t('logs.subtitle') }}</p>
       </div>
       <div class="flex gap-2 items-center">
+        <el-tag type="info" size="small">
+          保留 {{ retainDays }} 天 / 上限 {{ maxRows }} 条 · 当前 {{ audit.rows || 0 }} 条 · {{ ((audit.dbBytes || 0) / 1048576).toFixed(1) }} MB
+        </el-tag>
+        <el-button plain size="small" @click="showPolicy = true">轮转设置</el-button>
         <el-tag :type="live ? 'success' : 'info'" size="small">{{ live ? t('logs.live') : t('logs.paused') }}</el-tag>
         <el-button plain size="small" @click="live = !live">{{ live ? t('logs.paused') : t('logs.live') }}</el-button>
         <el-button plain size="small" :icon="Refresh" @click="load">{{ t('common.refresh') }}</el-button>
@@ -29,6 +33,24 @@
         <el-button plain @click="load">{{ t('common.refresh') }}</el-button>
       </div>
     </div>
+
+    <el-dialog v-model="showPolicy" title="审计日志轮转" width="420px">
+      <el-form label-position="top">
+        <el-form-item label="最多保留条数（超出后删除最旧）">
+          <el-input-number v-model="maxRows" :min="1000" :max="1000000" step="1000" controls-position="right" class="!w-full" />
+        </el-form-item>
+        <el-form-item label="最长保留天数（0 = 不按时间删）">
+          <el-input-number v-model="retainDays" :min="0" :max="3650" controls-position="right" class="!w-full" />
+        </el-form-item>
+        <div class="text-xs" style="color: var(--bt-text-secondary)">
+          每 10 分钟自动按以上策略轮转：先删超期记录，再按条数上限裁剪；删除后自动 CHECKPOINT 并在大批量删除时 VACUUM 收缩文件。
+        </div>
+      </el-form>
+      <template #footer>
+        <el-button @click="showPolicy = false">取消</el-button>
+        <el-button type="primary" :loading="policySaving" @click="savePolicy">保存并立即轮转</el-button>
+      </template>
+    </el-dialog>
 
     <div class="bt-card p-4">
       <el-table :data="rows" size="small" height="560" empty-text="—">
@@ -71,6 +93,38 @@ const state = store.state
 const rows = ref([])
 const live = ref(true)
 const filter = reactive({ module: '', status: '', target: '' })
+const audit = ref({})
+const showPolicy = ref(false)
+const policySaving = ref(false)
+const maxRows = ref(50000)
+const retainDays = ref(7)
+
+async function loadAuditStats() {
+  try {
+    const st = await api.status()
+    audit.value = st.audit || {}
+    if (st.auditPolicy) {
+      maxRows.value = Number(st.auditPolicy.maxRows || maxRows.value)
+      retainDays.value = Number(st.auditPolicy.retainDays || retainDays.value)
+    }
+  } catch { /* ignore */ }
+}
+
+async function savePolicy() {
+  policySaving.value = true
+  try {
+    await api.settings({ audit_max_rows: String(maxRows.value), audit_retain_days: String(retainDays.value) })
+    const res = await api.pruneLogs({ keep: maxRows.value, days: retainDays.value })
+    ElMessage.success(`已轮转，删除 ${res.removed || 0} 条`)
+    showPolicy.value = false
+    await load()
+    await loadAuditStats()
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    policySaving.value = false
+  }
+}
 
 function fmtTime(ts) {
   if (!ts) return '—'
@@ -107,6 +161,7 @@ async function clear() {
 let off = null
 onMounted(async () => {
   await load()
+  await loadAuditStats()
   off = onEvent((msg) => {
     if (msg.event !== 'audit' || !live.value) return
     const rec = msg.data

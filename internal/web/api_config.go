@@ -149,6 +149,18 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	st := s.rt.Status()
 	st["logDropped"] = s.log.Dropped()
 	st["dbPath"] = s.store.Path()
+	persisted, throttled := s.log.PersistStats()
+	st["audit"] = map[string]any{
+		"rows":      s.store.AuditCount(),
+		"dbBytes":   s.store.DBSizeBytes(),
+		"persisted": persisted,
+		"throttled": throttled,
+		"oldestTs":  s.store.OldestAuditTS(),
+	}
+	st["auditPolicy"] = map[string]string{
+		"maxRows":    s.store.GetSetting("audit_max_rows", "50000"),
+		"retainDays": s.store.GetSetting("audit_retain_days", "7"),
+	}
 	writeJSON(w, 200, st)
 }
 

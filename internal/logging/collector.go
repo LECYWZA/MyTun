@@ -40,6 +40,16 @@ type Collector struct {
 	stopOnce sync.Once
 	stopCh   chan struct{}
 	dropped  atomic.Int64
+
+	// Persistence throttle: a busy tunnel can emit thousands of audit rows per
+	// second. The in-memory ring still shows everything live; only this many
+	// rows per second reach SQLite, which keeps the database (and the WAL) small.
+	maxPerSec  int
+	persisted  atomic.Int64
+	throttled  atomic.Int64
+	secStart   time.Time
+	secCount   int
+	secMu      sync.Mutex
 }
 
 // New creates a collector. A nil store disables persistence.
@@ -48,11 +58,13 @@ func New(st *store.Store, capacity int) *Collector {
 		capacity = 5000
 	}
 	c := &Collector{
-		max:    capacity,
-		subs:   map[int]chan Record{},
-		st:     st,
-		writeCh: make(chan Record, 4096),
-		stopCh: make(chan struct{}),
+		max:       capacity,
+		subs:      map[int]chan Record{},
+		st:        st,
+		writeCh:   make(chan Record, 4096),
+		stopCh:    make(chan struct{}),
+		maxPerSec: 200,
+		secStart:  time.Now(),
 	}
 	go c.writer()
 	return c
@@ -108,10 +120,15 @@ func (c *Collector) Add(r Record) {
 		}
 	}
 	if c.st != nil {
-		select {
-		case c.writeCh <- r:
-		default:
-			// Persistence is best-effort; the UI keeps the in-memory view.
+		if c.allowPersist() {
+			select {
+			case c.writeCh <- r:
+				c.persisted.Add(1)
+			default:
+				// Persistence is best-effort; the UI keeps the in-memory view.
+			}
+		} else {
+			c.throttled.Add(1)
 		}
 	}
 }
@@ -132,6 +149,27 @@ func (c *Collector) Recent(n int) []Record {
 
 // Dropped reports how many live events were skipped due to slow subscribers.
 func (c *Collector) Dropped() int64 { return c.dropped.Load() }
+
+// allowPersist implements the per-second disk write budget.
+func (c *Collector) allowPersist() bool {
+	c.secMu.Lock()
+	defer c.secMu.Unlock()
+	now := time.Now()
+	if now.Sub(c.secStart) >= time.Second {
+		c.secStart = now
+		c.secCount = 0
+	}
+	if c.secCount >= c.maxPerSec {
+		return false
+	}
+	c.secCount++
+	return true
+}
+
+// PersistStats exposes how much of the audit stream reached disk.
+func (c *Collector) PersistStats() (persisted, throttled int64) {
+	return c.persisted.Load(), c.throttled.Load()
+}
 
 func (c *Collector) writer() {
 	ticker := time.NewTicker(time.Second)

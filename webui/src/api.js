@@ -51,6 +51,11 @@ export const api = {
     return request(`/api/traffic-logs${q ? '?' + q : ''}`)
   },
   clearLogs: () => request('/api/traffic-logs', { method: 'DELETE' }),
+  pruneLogs: (params = {}) => {
+    const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== null)).toString()
+    return request(`/api/traffic-logs/prune${q ? '?' + q : ''}`, { method: 'POST' })
+  },
+  settings: (payload) => request('/api/settings', { method: 'POST', body: payload }),
   testLatency: (payload) => request('/api/test-latency', { method: 'POST', body: payload }),
   testSpeed: (payload) => request('/api/test-speed', { method: 'POST', body: payload }),
   checkPort: (port) => request(`/api/check-port/${port}`),

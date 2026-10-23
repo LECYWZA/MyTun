@@ -433,12 +433,118 @@ func (s *Store) Audit(q AuditQuery) ([]AuditRow, error) {
 	return out, rows.Err()
 }
 
-// PruneAudit keeps at most keep rows.
+// PruneAudit keeps at most keep rows. Prefer PruneAuditBatched for large
+// tables: a single DELETE over hundreds of thousands of rows holds the write
+// lock for seconds and leaves the WAL huge.
 func (s *Store) PruneAudit(keep int) error {
+	_, err := s.PruneAuditBatched(keep)
+	return err
+}
+
+// PruneAuditBatched deletes old rows in chunks so the database stays responsive
+// while trimming. It returns how many rows were removed.
+func (s *Store) PruneAuditBatched(keep int) (int64, error) {
 	if keep <= 0 {
 		keep = 20000
 	}
-	_, err := s.db.Exec(`DELETE FROM audit WHERE id NOT IN (SELECT id FROM audit ORDER BY id DESC LIMIT ?)`, keep)
+	var removed int64
+	const chunk = 2000
+	for i := 0; i < 500; i++ { // hard stop: 1M rows per call
+		// Find the id boundary of the rows we want to keep.
+		var cutoff int64
+		err := s.db.QueryRow(`SELECT id FROM audit ORDER BY id DESC LIMIT 1 OFFSET ?`, keep).Scan(&cutoff)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return removed, nil // fewer than keep rows
+			}
+			return removed, err
+		}
+		res, err := s.db.Exec(`DELETE FROM audit WHERE id IN (SELECT id FROM audit WHERE id <= ? ORDER BY id DESC LIMIT ?)`, cutoff, chunk)
+		if err != nil {
+			return removed, err
+		}
+		n, _ := res.RowsAffected()
+		removed += n
+		if n < chunk {
+			return removed, nil
+		}
+	}
+	return removed, nil
+}
+
+// AuditPolicy is the retention policy for the audit trail.
+type AuditPolicy struct {
+	// MaxRows caps the table size regardless of age (0 = unlimited).
+	MaxRows int
+	// RetainDays deletes rows older than this many days (0 = keep forever).
+	RetainDays int
+}
+
+// PruneAuditPolicy applies the retention policy: first by age, then by row
+// count. Both passes are chunked so a large backlog does not lock the database.
+func (s *Store) PruneAuditPolicy(p AuditPolicy) (removed int64, err error) {
+	if p.RetainDays > 0 {
+		cutoff := time.Now().AddDate(0, 0, -p.RetainDays).UnixMilli()
+		const chunk = 2000
+		for i := 0; i < 500; i++ {
+			res, e := s.db.Exec(
+				`DELETE FROM audit WHERE id IN (SELECT id FROM audit WHERE ts < ? ORDER BY id LIMIT ?)`,
+				cutoff, chunk)
+			if e != nil {
+				return removed, e
+			}
+			n, _ := res.RowsAffected()
+			removed += n
+			if n < chunk {
+				break
+			}
+		}
+	}
+	if p.MaxRows > 0 {
+		n, e := s.PruneAuditBatched(p.MaxRows)
+		removed += n
+		if e != nil {
+			return removed, e
+		}
+	}
+	return removed, nil
+}
+
+// OldestAuditTS returns the timestamp of the oldest row (0 when empty).
+func (s *Store) OldestAuditTS() int64 {
+	var ts int64
+	_ = s.db.QueryRow(`SELECT COALESCE(MIN(ts),0) FROM audit`).Scan(&ts)
+	return ts
+}
+
+// AuditCount returns the number of stored audit rows.
+func (s *Store) AuditCount() int64 {
+	var n int64
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM audit`).Scan(&n)
+	return n
+}
+
+// DBSizeBytes reports the on-disk footprint including the WAL.
+func (s *Store) DBSizeBytes() int64 {
+	var total int64
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if fi, err := os.Stat(s.path + suffix); err == nil {
+			total += fi.Size()
+		}
+	}
+	return total
+}
+
+// Checkpoint truncates the WAL so it cannot grow without bound during long
+// stretches of steady auditing.
+func (s *Store) Checkpoint() error {
+	_, err := s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	return err
+}
+
+// Vacuum compacts the file after a large prune. Expensive; call sparingly.
+func (s *Store) Vacuum() error {
+	_, err := s.db.Exec(`VACUUM`)
 	return err
 }
 
