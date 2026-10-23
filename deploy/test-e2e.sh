@@ -21,7 +21,10 @@ TARGET_PORT="${TARGET_PORT:-18090}"
 PW="${PW:-e2e-pass}"
 
 say() { printf '\n\033[1;36m== %s ==\033[0m\n' "$*"; }
-apost() { curl -s --noproxy '*' -c "$2" -X POST -H 'Content-Type: application/json' -d "$3" "http://127.0.0.1:$1$4"; }
+# apost <port> <cookiejar> <json-body> <path>  — sends the jar too so the
+# HttpOnly session cookie set by /api/login is reused afterwards.
+apost() { curl -s --noproxy '*' -b "$2" -c "$2" -X POST -H 'Content-Type: application/json' -d "$3" "http://127.0.0.1:$1$4"; }
+aget() { curl -s --noproxy '*' -b "$2" "http://127.0.0.1:$1$3"; }
 
 cleanup() {
   if [ "${KEEP:-0}" = "1" ]; then
@@ -55,7 +58,6 @@ docker run -d --name mytun-b --network host -v "$TMPDIR_E2E/b:/data" "$IMAGE" \
 sleep 4
 
 say "configure B (client only, release default :$TUNNEL_PORT)"
-apost "$B_PORT" /tmp/e2e-b.jar "{\"servers\":[]}" /api/login >/dev/null
 apost "$B_PORT" /tmp/e2e-b.jar "{\"username\":\"admin\",\"password\":\"password\"}" /api/login >/dev/null
 apost "$B_PORT" /tmp/e2e-b.jar "{\"servers\":[],\"clients\":[{\"id\":\"cl1\",\"alias\":\"B\",\"host\":\"127.0.0.1\",\"port\":$TUNNEL_PORT,\"password\":\"$PW\",\"clientId\":\"client-1\",\"sni\":\"mail.qq.com\",\"enabled\":true}],\"forwards\":[],\"proxies\":[],\"settings\":{}}" /api/config >/dev/null
 sleep 1
@@ -66,7 +68,14 @@ apost "$A_PORT" /tmp/e2e-a.jar "{\"servers\":[{\"id\":\"srv-a\",\"alias\":\"A\",
 sleep 3
 
 say "status"
-curl -s --noproxy '*' -b /tmp/e2e-a.jar "http://127.0.0.1:$A_PORT/api/status" | head -c 400; echo
+aget "$A_PORT" /tmp/e2e-a.jar /api/status | head -c 400; echo
+
+if ! aget "$A_PORT" /tmp/e2e-a.jar /api/status | grep -q '"inbound"'; then
+  say "status probe failed; container logs:"
+  docker logs --tail 20 mytun-a || true
+  docker logs --tail 20 mytun-b || true
+  exit 1
+fi
 
 say "throughput: port map ($MAP_PORT -> tunnel -> $TARGET_PORT)"
 for i in 1 2 3; do
@@ -87,7 +96,7 @@ say "latency: 20 sequential small requests through the tunnel"
 start=$(date +%s%N)
 for i in $(seq 1 20); do curl -s --noproxy '*' -o /dev/null "http://127.0.0.1:$MAP_PORT/index.html"; done
 end=$(date +%s%N)
-echo "  avg $(( (end-start)/20000000 )) ms/req"
+awk -v ns="$(( end - start ))" 'BEGIN{printf "  avg %.1f ms/req over 20 requests\n", (ns/1000000)/20}' 
 
 say "memory"
 docker stats --no-stream --format '  {{.Name}} {{.MemUsage}}' mytun-a mytun-b
