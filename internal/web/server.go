@@ -44,7 +44,7 @@ type Server struct {
 	authMu sync.Mutex
 
 	wsMu    sync.Mutex
-	wsConns map[*websocket.Conn]struct{}
+	wsConns map[*wsClient]struct{}
 
 	srv     *http.Server
 	ln      net.Listener
@@ -66,7 +66,7 @@ func New(o Options) (*Server, error) {
 		store:   o.Store,
 		rt:      o.Runtime,
 		log:     o.Log,
-		wsConns: map[*websocket.Conn]struct{}{},
+		wsConns: map[*wsClient]struct{}{},
 		dataDir: o.DataDir,
 	}
 	secret := o.Store.GetSetting("jwt_secret", "")
@@ -139,9 +139,9 @@ func (s *Server) Stop() {
 	}
 	s.wsMu.Lock()
 	for c := range s.wsConns {
-		_ = c.Close()
+		c.close()
 	}
-	s.wsConns = map[*websocket.Conn]struct{}{}
+	s.wsConns = map[*wsClient]struct{}{}
 	s.wsMu.Unlock()
 }
 
@@ -338,6 +338,53 @@ func readJSON(r *http.Request, v any) error {
 	return json.NewDecoder(http.MaxBytesReader(nil, r.Body, 4<<20)).Decode(v)
 }
 
+// wsClient serialises all writes for one websocket. gorilla/websocket panics
+// on concurrent writers, and both the broadcast ticker and the audit
+// subscription write to the same socket — hence the dedicated writer goroutine.
+type wsClient struct {
+	conn *websocket.Conn
+	send chan []byte
+	once sync.Once
+	quit chan struct{}
+}
+
+func newWSClient(c *websocket.Conn) *wsClient {
+	w := &wsClient{conn: c, send: make(chan []byte, 256), quit: make(chan struct{})}
+	go w.writer()
+	return w
+}
+
+func (w *wsClient) writer() {
+	for {
+		select {
+		case <-w.quit:
+			return
+		case msg := <-w.send:
+			_ = w.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			if err := w.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				w.close()
+				return
+			}
+		}
+	}
+}
+
+// push queues a frame; slow clients drop frames instead of stalling everyone.
+func (w *wsClient) push(msg []byte) {
+	select {
+	case <-w.quit:
+	case w.send <- msg:
+	default:
+	}
+}
+
+func (w *wsClient) close() {
+	w.once.Do(func() {
+		close(w.quit)
+		_ = w.conn.Close()
+	})
+}
+
 // wsBroadcast pushes an event to every connected console.
 func (s *Server) wsBroadcast(event string, payload any) {
 	msg, err := json.Marshal(map[string]any{"event": event, "data": payload, "ts": time.Now().UnixMilli()})
@@ -346,11 +393,7 @@ func (s *Server) wsBroadcast(event string, payload any) {
 	}
 	s.wsMu.Lock()
 	for c := range s.wsConns {
-		_ = c.SetWriteDeadline(time.Now().Add(3 * time.Second))
-		if err := c.WriteMessage(websocket.TextMessage, msg); err != nil {
-			_ = c.Close()
-			delete(s.wsConns, c)
-		}
+		c.push(msg)
 	}
 	s.wsMu.Unlock()
 }
@@ -376,39 +419,45 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	client := newWSClient(c)
 	s.wsMu.Lock()
-	s.wsConns[c] = struct{}{}
+	s.wsConns[client] = struct{}{}
 	s.wsMu.Unlock()
 
-	// Subscribe live audit records.
 	id, recCh := s.log.Subscribe(256)
-	done := make(chan struct{})
+	stopSub := make(chan struct{})
 	go func() {
-		defer close(done)
-		for rec := range recCh {
-			msg, _ := json.Marshal(map[string]any{"event": "audit", "data": rec})
-			_ = c.SetWriteDeadline(time.Now().Add(3 * time.Second))
-			if err := c.WriteMessage(websocket.TextMessage, msg); err != nil {
+		for {
+			select {
+			case <-stopSub:
 				return
+			case rec, ok := <-recCh:
+				if !ok {
+					return
+				}
+				if msg, err := json.Marshal(map[string]any{"event": "audit", "data": rec}); err == nil {
+					client.push(msg)
+				}
 			}
 		}
 	}()
-	// Push an initial status snapshot.
 	if st, err := json.Marshal(map[string]any{"event": "status", "data": s.rt.Status()}); err == nil {
-		_ = c.WriteMessage(websocket.TextMessage, st)
+		client.push(st)
 	}
 
+	// Read loop: we do not expect inbound frames, but reading is what detects
+	// a dead peer and keeps the socket healthy.
 	for {
 		if _, _, err := c.ReadMessage(); err != nil {
 			break
 		}
 	}
+	close(stopSub)
 	s.log.Unsubscribe(id)
-	<-done
 	s.wsMu.Lock()
-	delete(s.wsConns, c)
+	delete(s.wsConns, client)
 	s.wsMu.Unlock()
-	_ = c.Close()
+	client.close()
 }
 
 func (s *Server) verifyTokenOK(tok string) bool {

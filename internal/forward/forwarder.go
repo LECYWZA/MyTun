@@ -314,12 +314,16 @@ func bridge(conn net.Conn, ch *mux.Channel) (int64, int64) {
 		done <- struct{}{}
 	}()
 	<-done
-	// Half-close both ends so the remaining direction drains, but never wait
-	// forever on a peer that forgets to close.
+	// Give the other direction a bounded window to drain. Unbounded waiting here
+	// leaks a socket per aborted client, which shows up as fd growth on a busy
+	// tunnel.
 	select {
 	case <-done:
-	case <-time.After(10 * time.Minute):
+	case <-time.After(20 * time.Second):
 	}
+	// Close both ends so the remaining copy() returns and its fd is released.
+	_ = conn.Close()
+	_ = ch.Close()
 	return up.Load(), down.Load()
 }
 
