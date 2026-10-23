@@ -16,7 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
+	goruntime "runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -146,7 +146,7 @@ func main() {
 				if err := st.PruneAudit(20000); err != nil {
 					log.Printf("审计日志清理失败: %v", err)
 				}
-				runtime.GC()
+				goruntime.GC()
 			}
 		}
 	}()
