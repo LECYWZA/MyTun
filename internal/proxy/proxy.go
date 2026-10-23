@@ -612,9 +612,15 @@ func pipeBoth(conn net.Conn, br *bufio.Reader, peer net.Conn) (int64, int64) {
 		down.Store(n)
 		done <- struct{}{}
 	}()
+	// Wait for BOTH directions before closing. The request side reaching EOF only
+	// means the client finished sending (HTTP fans out in one half-duplex burst);
+	// closing here would truncate the response stream mid-body.
 	<-done
+	select {
+	case <-done:
+	case <-time.After(5 * time.Minute):
+	}
 	_ = peer.Close()
-	<-done
 	return up.Load(), down.Load()
 }
 

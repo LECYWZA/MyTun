@@ -97,6 +97,11 @@ public class TunnelService extends Service {
             cmd.add("127.0.0.1");
             cmd.add("--port");
             cmd.add(String.valueOf(PORT));
+            String dns = activeDNSServer();
+            if (dns != null) {
+                cmd.add("--dns");
+                cmd.add(dns);
+            }
 
             ProcessBuilder pb = new ProcessBuilder(cmd);
             pb.directory(getFilesDir());
@@ -109,6 +114,38 @@ public class TunnelService extends Service {
         } catch (Exception e) {
             Log.e(TAG, "failed to start core", e);
             updateNotification("核心启动失败: " + e.getMessage());
+        }
+    }
+
+    /** Android has no resolv.conf, so hand the core the live network resolver. */
+    @SuppressWarnings("deprecation")
+    private String activeDNSServer() {
+        try {
+            android.net.ConnectivityManager cm =
+                    (android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            if (cm == null) {
+                return null;
+            }
+            android.net.Network net = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                    ? cm.getActiveNetwork() : null;
+            if (net != null) {
+                android.net.LinkProperties lp = cm.getLinkProperties(net);
+                if (lp != null) {
+                    for (java.net.InetAddress a : lp.getDnsServers()) {
+                        if (a != null && !a.isLoopbackAddress()) {
+                            return a.getHostAddress();
+                        }
+                    }
+                }
+            }
+            // Fallback for old devices: read the legacy property.
+            Class<?> sp = Class.forName("android.os.SystemProperties");
+            Object v = sp.getMethod("get", String.class, String.class).invoke(null, "net.dns1", "");
+            String s = String.valueOf(v);
+            return s.isEmpty() ? null : s;
+        } catch (Throwable t) {
+            Log.w(TAG, "dns detect failed: " + t);
+            return null;
         }
     }
 

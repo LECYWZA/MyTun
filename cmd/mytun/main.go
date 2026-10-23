@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -35,6 +36,7 @@ func main() {
 	webHost := "0.0.0.0"
 	autoStart := true
 	generateOnly := false
+	dnsServer := ""
 
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
@@ -60,6 +62,11 @@ func main() {
 				webHost = args[i+1]
 				i++
 			}
+		case "--dns":
+			if i+1 < len(args) {
+				dnsServer = args[i+1]
+				i++
+			}
 		case "--no-autostart":
 			autoStart = false
 		case "--init-only":
@@ -70,6 +77,8 @@ func main() {
 			}
 		}
 	}
+
+	applyDNS(dnsServer)
 
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("[mytun] ")
@@ -148,6 +157,26 @@ func main() {
 	log.Println("已停止")
 }
 
+// applyDNS points Go's resolver at an explicit server. Android has no usable
+// /etc/resolv.conf, so the app passes the live network DNS servers in.
+func applyDNS(server string) {
+	if server == "" {
+		return
+	}
+	addr := server
+	if !strings.Contains(addr, ":") {
+		addr = net.JoinHostPort(addr, "53")
+	}
+	d := &net.Dialer{Timeout: 5 * time.Second}
+	net.DefaultResolver = &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return d.DialContext(ctx, "udp", addr)
+		},
+	}
+	log.Printf("DNS 解析强制走 %s", addr)
+}
+
 func usage() {
 	fmt.Print(`MyTun ` + Version + `
 用法: mytun [选项]
@@ -156,6 +185,7 @@ func usage() {
   --data <目录>      数据目录（默认系统配置目录下的 MyTun）
   --no-autostart     启动时不自动拉起已启用的隧道/代理
   --init-only        仅初始化数据库后退出
+  --dns <ip>         指定 DNS 服务器（Android 等无 resolv.conf 的环境）
   --version          显示版本
 `)
 }
