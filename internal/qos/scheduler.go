@@ -64,7 +64,10 @@ func DefaultConfig() Config {
 		TotalKbps:            0,
 		InteractivePercent:   20,
 		InteractiveFloorKbps: 320,
-		BurstKB:              64,
+		// A generous burst lets a short page load (tens to hundreds of KB) finish
+		// in one shot while the sustained rate stays capped. This is what keeps
+		// browsing snappy without letting a download monopolise the link.
+		BurstKB: 512,
 	}
 }
 
@@ -169,7 +172,7 @@ func normalize(c Config) Config {
 	if c.InteractiveFloorKbps > d.InteractiveFloorKbps*100 {
 		c.InteractiveFloorKbps = d.InteractiveFloorKbps * 100
 	}
-	if c.BurstKB < 32 || c.BurstKB > 4096 {
+	if c.BurstKB < 64 || c.BurstKB > 8192 {
 		c.BurstKB = d.BurstKB
 	}
 	return c
@@ -244,7 +247,7 @@ func (s *Scheduler) Register(id uint32, role string) {
 		st.role = role
 		st.mu.Unlock()
 	} else {
-		s.streams[id] = newStream(id, role, s.Config(), s.capBps)
+		s.streams[id] = newStream(id, role, s.Config(), s.capBps, len(s.streams))
 	}
 	s.mu.Unlock()
 }
@@ -262,7 +265,7 @@ func (s *Scheduler) Unregister(id uint32) {
 	s.mu.Unlock()
 }
 
-func newStream(id uint32, role string, cfg Config, capBps float64) *stream {
+func newStream(id uint32, role string, cfg Config, capBps float64, active int) *stream {
 	now := time.Now()
 	st := &stream{
 		id:         id,
@@ -273,13 +276,20 @@ func newStream(id uint32, role string, cfg Config, capBps float64) *stream {
 		kind:       KindInteractive,
 		wake:       make(chan struct{}, 1),
 	}
-	// Fixed-mode tunnels know their ceiling up front. Apply it immediately and
-	// start the stream in the bulk class: the operator asked for a hard cap, so
-	// a short transfer must not slip through before the first control tick has
-	// had a chance to classify it. The controller still demotes a long-quiet
-	// stream back to interactive later.
+	// A new channel starts at its fair share of the known ceiling, not at the
+	// full tunnel rate. HTTP requests create a fresh channel each time, so the
+	// classifier never gets a chance to look at short-lived streams; handing them
+	// the fair share up front is what actually prevents a download from starving
+	// them. A lone stream still gets the whole tunnel (share == capBps).
 	if cfg.Enabled && cfg.Mode == ModeFixed && capBps > 0 {
-		st.limitBps = capBps
+		share := capBps
+		if active > 0 {
+			share = capBps / float64(active+1)
+		}
+		if share < 64*1024 {
+			share = 64 * 1024
+		}
+		st.limitBps = share
 		st.kind = KindBulk
 	}
 	return st
@@ -404,7 +414,7 @@ func (s *Scheduler) stream(id uint32, role string) *stream {
 		}
 		return st
 	}
-	st := newStream(id, role, s.Config(), s.capBps)
+	st := newStream(id, role, s.Config(), s.capBps, len(s.streams))
 	s.streams[id] = st
 	s.streamsMade.Add(1)
 	return st
