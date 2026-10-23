@@ -27,7 +27,11 @@ var (
 // maxChannelBacklog bounds per-channel buffering so a slow reader cannot
 // exhaust memory. This is a safety valve, not normal flow control: real
 // backpressure comes from the peer's TCP window once io.Copy blocks.
-const maxChannelBacklog = 2 << 20 // 2 MiB
+const maxChannelBacklog = 8 << 20 // 8 MiB of unconsumed data per channel
+
+// backlogWait bounds how long a producer waits for the consumer to drain before
+// the channel is considered stuck and dropped.
+var backlogWait = 20 * time.Second
 
 // Channel is a bidirectional byte stream multiplexed over a Session. It
 // implements net.Conn so it can be handed to io.Copy directly.
@@ -52,6 +56,8 @@ type Channel struct {
 	bytesOut   atomic.Int64
 	ackOnce    sync.Once
 	ackCh      chan bool
+	// space signals a producer waiting for the consumer to drain the backlog.
+	space chan struct{}
 }
 
 func newChannel(s *Session, id uint32, meta map[string]any) *Channel {
@@ -67,6 +73,7 @@ func newChannel(s *Session, id uint32, meta map[string]any) *Channel {
 		Meta:      meta,
 		role:      role,
 		ackCh:     make(chan bool, 1),
+		space:     make(chan struct{}, 1),
 		createdAt: time.Now(),
 	}
 	c.cond = sync.NewCond(&c.mu)
@@ -100,22 +107,42 @@ func (c *Channel) BytesIn() int64  { return c.bytesIn.Load() }
 func (c *Channel) BytesOut() int64 { return c.bytesOut.Load() }
 
 // Push enqueues payload received from the peer.
+//
+// When the consumer falls behind, Push waits for it to drain instead of killing
+// the channel. Dropping the channel here used to truncate large transfers on
+// fast tunnels: 2 MiB of backlog is only a few milliseconds of data, so an
+// ordinary scheduling hiccup silently cut the stream.
 func (c *Channel) Push(p []byte) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed {
-		return ErrChannelClosed
+	deadline := time.Now().Add(backlogWait)
+	for {
+		c.mu.Lock()
+		if c.closed {
+			c.mu.Unlock()
+			return ErrChannelClosed
+		}
+		if len(c.buf)-c.readOff+len(p) <= maxChannelBacklog {
+			c.buf = append(c.buf, p...)
+			c.cond.Broadcast()
+			c.mu.Unlock()
+			return nil
+		}
+		c.mu.Unlock()
+
+		// Consumer is behind: wait for room. The bounded wait keeps a stalled
+		// peer from wedging the whole session forever.
+		if time.Now().After(deadline) {
+			c.mu.Lock()
+			c.closed = true
+			c.err = ErrBacklogFull
+			c.cond.Broadcast()
+			c.mu.Unlock()
+			return ErrBacklogFull
+		}
+		select {
+		case <-c.space:
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
-	backlog := len(c.buf) - c.readOff + len(p)
-	if backlog > maxChannelBacklog {
-		c.closed = true
-		c.err = ErrBacklogFull
-		c.cond.Broadcast()
-		return ErrBacklogFull
-	}
-	c.buf = append(c.buf, p...)
-	c.cond.Broadcast()
-	return nil
 }
 
 // Read implements io.Reader.
@@ -135,6 +162,10 @@ func (c *Channel) Read(b []byte) (int, error) {
 			}
 			c.bytesIn.Add(int64(n))
 			totalIn.Add(int64(n))
+			select {
+			case c.space <- struct{}{}:
+			default:
+			}
 			return n, nil
 		}
 		if c.closed {

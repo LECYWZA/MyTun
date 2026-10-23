@@ -172,18 +172,69 @@ func TestLargeConcurrentStreams(t *testing.T) {
 	}
 }
 
-func TestBacklogLimit(t *testing.T) {
+// TestBacklogAppliesBackpressure: with nobody reading, a producer must block
+// once the backlog cap is reached (not drop the channel, which used to truncate
+// large transfers on fast tunnels), and resume once the consumer drains.
+func TestBacklogAppliesBackpressure(t *testing.T) {
 	_, cli := pipePair(t, "pw")
 	defer cli.Close()
 	ch, err := cli.OpenChannel(map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Nobody reads, so pushing past the cap must fail instead of growing forever.
+
+	const chunk = 64 * 1024
+	pushed := make(chan error, 1)
+	go func() {
+		for i := 0; i < 200; i++ { // 12.5 MiB, past the 8 MiB cap
+			if err := ch.Push(make([]byte, chunk)); err != nil {
+				pushed <- err
+				return
+			}
+		}
+		pushed <- nil
+	}()
+
+	// The producer must be parked, not finished.
+	select {
+	case err := <-pushed:
+		t.Fatalf("producer should be blocked by backpressure, returned %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// Drain it; the producer should then complete.
+	buf := make([]byte, chunk)
+	for i := 0; i < 200; i++ {
+		if _, err := ch.Read(buf); err != nil {
+			t.Fatalf("read %d: %v", i, err)
+		}
+	}
+	select {
+	case err := <-pushed:
+		if err != nil {
+			t.Fatalf("producer failed after drain: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("producer did not resume after the consumer drained")
+	}
+}
+
+// TestBacklogTimeoutDropsStuckChannel: a consumer that never reads must not
+// wedge the session forever.
+func TestBacklogTimeoutDropsStuckChannel(t *testing.T) {
+	old := backlogWait
+	backlogWait = 150 * time.Millisecond
+	defer func() { backlogWait = old }()
+
+	_, cli := pipePair(t, "pw")
+	defer cli.Close()
+	ch, err := cli.OpenChannel(map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	var pushErr error
-	for i := 0; i < 64 && pushErr == nil; i++ {
-		block := make([]byte, 64*1024)
-		pushErr = ch.Push(block)
+	for i := 0; i < 200 && pushErr == nil; i++ {
+		pushErr = ch.Push(make([]byte, 64*1024))
 	}
 	if pushErr != ErrBacklogFull {
 		t.Fatalf("expected ErrBacklogFull, got %v", pushErr)
