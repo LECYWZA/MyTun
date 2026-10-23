@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -89,6 +90,61 @@ func (s *Server) handlePruneLogs(w http.ResponseWriter, r *http.Request) {
 		"bytesBefore": beforeBytes, "bytesAfter": s.store.DBSizeBytes(),
 		"oldestTs": s.store.OldestAuditTS(),
 	})
+}
+
+// handleAuditExport streams the audit table as CSV.
+func (s *Server) handleAuditExport(w http.ResponseWriter, r *http.Request) {
+	limit := 100000
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n < 1000000 {
+			limit = n
+		}
+	}
+	rows, err := s.store.Audit(store.AuditQuery{Limit: limit})
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="mytun-audit.csv"`)
+	_, _ = w.Write([]byte("\xEF\xBB\xBF")) // BOM so Excel opens UTF-8 correctly
+	bw := bufio.NewWriter(w)
+	defer bw.Flush()
+	_, _ = bw.WriteString("time,module,source,target,action,networkMode,bytesUp,bytesDown,durationMs,status,error,ruleId\n")
+	for _, a := range rows {
+		fmt.Fprintf(bw, "%s,%s,%s,%s,%s,%s,%d,%d,%d,%s,%s,%s\n",
+			time.UnixMilli(a.TS).Format("2006-01-02 15:04:05"),
+			csvSafe(a.Module), csvSafe(a.Source), csvSafe(a.Target), csvSafe(a.Action),
+			csvSafe(a.NetworkMode), a.BytesUp, a.BytesDown, a.DurationMS, csvSafe(a.Status),
+			csvSafe(a.Error), csvSafe(a.RuleID))
+	}
+}
+
+func csvSafe(v string) string {
+	if v == "" {
+		return ""
+	}
+	if strings.ContainsAny(v, ",\"\n\r") {
+		return `"` + strings.ReplaceAll(v, `"`, `""`) + `"`
+	}
+	return v
+}
+
+// handleTrafficSeries aggregates audit rows into per-minute buckets for the
+// console chart. Buckets come straight from SQLite so no extra memory is kept.
+func (s *Server) handleTrafficSeries(w http.ResponseWriter, r *http.Request) {
+	minutes := 60
+	if v := r.URL.Query().Get("minutes"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 1440 {
+			minutes = n
+		}
+	}
+	series, err := s.store.TrafficSeries(minutes)
+	if err != nil {
+		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"minutes": minutes, "buckets": series})
 }
 
 func (s *Server) handleSystemProxy(w http.ResponseWriter, r *http.Request) {

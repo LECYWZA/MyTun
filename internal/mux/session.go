@@ -260,7 +260,7 @@ type Session struct {
 	OnChannel  func(*Channel)
 	OnClose    func(*Session)
 	OnAuth     func(password, clientID, proto string) bool
-	OnAuthDone func(ok bool)
+	OnAuthDone func(ok bool, reason string)
 
 	// identity (set by tunnel layer)
 	ClientID   string
@@ -367,9 +367,13 @@ func (s *Session) Run() error {
 			s.handleAuth(f.Payload)
 		case TypeAuthRes:
 			ok := len(f.Payload) > 0 && f.Payload[0] == 1
+			reason := ""
+			if !ok && len(f.Payload) > 1 {
+				reason = string(f.Payload[1:])
+			}
 			s.authed.Store(ok)
 			if s.OnAuthDone != nil {
-				s.OnAuthDone(ok)
+				s.OnAuthDone(ok, reason)
 			}
 		case TypeCreate:
 			s.handleCreate(f)
@@ -453,6 +457,9 @@ func (s *Session) handleAuth(payload []byte) {
 		if s.Proto != "" {
 			res = append(res, []byte(`{"proto":"mytun-2"}`)...)
 		}
+	} else {
+		// Tell the peer why. v1 clients only read the first byte and ignore the rest.
+		res = append(res, []byte("password mismatch")...)
 	}
 	_ = s.enc.WriteFrameAndFlush(TypeAuthRes, 0, res)
 }

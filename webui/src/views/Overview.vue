@@ -70,6 +70,22 @@
 
     <div class="bt-card p-5">
       <div class="flex items-center justify-between mb-3">
+        <div class="font-medium" style="color: var(--bt-text)">近 60 分钟流量</div>
+        <div class="text-xs" style="color: var(--bt-text-secondary)">
+          连接 {{ chartTotals.conns }} · 下行 {{ fmtBytes(chartTotals.down) }} · 错误 {{ chartTotals.errors }}
+        </div>
+      </div>
+      <div class="flex items-end gap-[2px]" style="height: 90px">
+        <div v-for="(b, i) in trafficChart" :key="i" :title="new Date(b.ts).toLocaleTimeString() + ' · ' + fmtBytes(b.bytesDown)"
+             :style="{ height: Math.max(2, b.height) + '%', background: b.errors ? 'var(--bt-danger)' : 'var(--bt-primary)', flex: 1, opacity: b.conns ? 0.85 : 0.2, borderRadius: '2px' }" />
+      </div>
+      <div class="flex justify-between text-xs mt-1" style="color: var(--bt-text-muted)">
+        <span>-60m</span><span>now</span>
+      </div>
+    </div>
+
+    <div class="bt-card p-5">
+      <div class="flex items-center justify-between mb-3">
         <div class="font-medium" style="color: var(--bt-text)">{{ t('logs.title') }}</div>
         <el-button size="small" plain @click="$router.push('/logs')">{{ t('nav.logs') }}</el-button>
       </div>
@@ -108,6 +124,27 @@ const cards = computed(() => [
 const recentAudit = computed(() => (state.audit.length ? state.audit.slice(0, 8) : recent.value))
 
 const recent = ref([])
+const trafficChart = ref([])
+const chartTotals = ref({ conns: 0, down: 0, errors: 0 })
+
+async function loadChart() {
+  try {
+    const res = await api.trafficSeries(60)
+    const buckets = res.buckets || []
+    const max = Math.max(1, ...buckets.map(b => b.bytesDown || 0))
+    trafficChart.value = buckets.map(b => ({
+      ts: b.ts,
+      conns: b.conns,
+      errors: b.errors,
+      height: Math.round(((b.bytesDown || 0) / max) * 100),
+    }))
+    chartTotals.value = {
+      conns: buckets.reduce((a, b) => a + (b.conns || 0), 0),
+      down: buckets.reduce((a, b) => a + (b.bytesDown || 0), 0),
+      errors: buckets.reduce((a, b) => a + (b.errors || 0), 0),
+    }
+  } catch { /* ignore */ }
+}
 
 function fmtBytes(n) {
   const v = Number(n) || 0
@@ -157,6 +194,7 @@ async function clearLogs() {
 
 onMounted(async () => {
   await store.refreshStatus()
+  await loadChart()
   try { recent.value = await api.trafficLogs({ limit: 8 }) } catch { /* ignore */ }
 })
 </script>

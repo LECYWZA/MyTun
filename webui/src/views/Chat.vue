@@ -25,6 +25,12 @@
           <el-empty v-if="!messages.length" :description="t('common.none')" :image-size="60" />
         </div>
 
+        <div class="flex gap-2 items-start mb-2">
+          <span class="text-xs" style="color: var(--bt-text-secondary); line-height: 32px">{{ t('chat.target') }}</span>
+          <el-select v-model="target" size="small" clearable style="width: 220px" :placeholder="t('chat.targetAuto')">
+            <el-option v-for="s in sessions" :key="s.value" :label="s.label" :value="s.value" />
+          </el-select>
+        </div>
         <div class="flex gap-2">
           <el-input
             v-model="draft"
@@ -82,6 +88,17 @@ const uploading = ref(false)
 const fileInput = ref(null)
 
 const online = computed(() => (state.status.inbound || []).length > 0 || (state.status.clients || []).some((c) => c.status === 'connected'))
+const target = ref('')
+// Several peers can be online at once; let the user say who receives the message
+// instead of silently picking the first one.
+const sessions = computed(() => {
+  const list = []
+  for (const c of state.status.inbound || []) list.push({ label: `在线: ${c.clientId}`, value: c.clientId })
+  for (const c of state.status.clients || []) {
+    if (c.status === 'connected') list.push({ label: `上游: ${c.alias || c.host}`, value: c.clientId || c.id })
+  }
+  return list
+})
 
 function fmtSize(n) {
   const v = Number(n) || 0
@@ -110,7 +127,7 @@ async function send() {
   if (!draft.value.trim()) return
   sending.value = true
   try {
-    const res = await api.chatSend({ text: draft.value })
+    const res = await api.chatSend({ text: draft.value, clientId: target.value })
     if (!res.ok) throw new Error(res.error || 'send failed')
     draft.value = ''
   } catch (e) {
@@ -127,7 +144,7 @@ async function onFile(ev) {
   if (!file) return
   uploading.value = true
   try {
-    const res = await api.sendFile(file)
+    const res = await api.sendFile(file, { clientId: target.value })
     if (!res.ok) throw new Error(res.error || 'upload failed')
     ElMessage.success(t('common.saved'))
     await loadFiles()

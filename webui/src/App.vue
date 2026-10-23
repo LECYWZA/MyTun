@@ -170,6 +170,9 @@ async function doLogout() {
 onMounted(async () => {
   applyTheme()
   try {
+    // Silent sign-in: a valid refresh cookie (7 days) or a loopback connection
+    // gets the user straight in without a password prompt.
+    try { await api.refresh() } catch { /* no session yet */ }
     await store.bootstrap()
     sysproxyOn.value = !!(state.status.systemProxy || state.systemProxy.enabled)
     if (state.authenticated) router.push('/overview')

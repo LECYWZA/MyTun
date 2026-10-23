@@ -5,7 +5,12 @@
         <h2 class="text-xl font-semibold" style="color: var(--bt-text)">{{ t('config.title') }}</h2>
         <p class="text-sm mt-1" style="color: var(--bt-text-secondary)">{{ t('config.subtitle') }}</p>
       </div>
-      <el-button type="primary" :loading="saving" @click="save">{{ t('common.save') }}</el-button>
+      <div class="flex gap-2">
+        <el-button plain :loading="saving" @click="exportConfig">{{ t('config.export') }}</el-button>
+        <el-button plain @click="pickImport">{{ t('config.import') }}</el-button>
+        <el-button type="primary" :loading="saving" @click="save">{{ t('common.save') }}</el-button>
+      </div>
+      <input ref="importInput" type="file" accept="application/json" class="hidden" @change="doImport" />
     </div>
 
     <el-alert type="info" :closable="false" show-icon :title="t('config.hint')" />
@@ -75,54 +80,54 @@
     <div class="bt-card p-5">
       <div class="flex items-start justify-between flex-wrap gap-3">
         <div>
-          <div class="font-medium" style="color: var(--bt-text)">流量调度（公平分流）</div>
+          <div class="font-medium" style="color: var(--bt-text)">{{ t('qos.title') }}</div>
           <div class="text-xs mt-1" style="color: var(--bt-text-secondary)">
-            开启后自动识别「下载型」与「浏览型」通道：下载被压到自己的份额，浏览与交互流量保留保底带宽，避免一条隧道被单个大流量占满。
+            {{ t('qos.subtitle') }}
           </div>
         </div>
         <el-switch v-model="qos.enabled" :loading="qosSaving" @change="saveQos" />
       </div>
 
       <div class="grid grid-cols-1 md:grid-cols-4 gap-3 mt-4">
-        <el-form-item label="容量模式" class="!mb-0">
+        <el-form-item :label="t('qos.mode')" class="!mb-0">
           <el-select v-model="qos.mode" :disabled="!qos.enabled" @change="saveQos">
-            <el-option label="自动估计（按实测峰值）" value="auto" />
-            <el-option label="按上限限速" value="fixed" />
+            <el-option :label="t('qos.modeAuto')" value="auto" />
+            <el-option :label="t('qos.modeFixed')" value="fixed" />
           </el-select>
         </el-form-item>
-        <el-form-item label="总带宽上限 (Mbps，0=不限)" class="!mb-0">
+        <el-form-item :label="t('qos.cap')" class="!mb-0">
           <el-input-number v-model="qos.totalMbps" :min="0" :max="100000" :disabled="!qos.enabled" controls-position="right" class="!w-full" @change="saveQos" />
         </el-form-item>
-        <el-form-item label="交互保底占比 (%)" class="!mb-0">
+        <el-form-item :label="t('qos.interactivePct')" class="!mb-0">
           <el-input-number v-model="qos.interactivePercent" :min="5" :max="90" :disabled="!qos.enabled" controls-position="right" class="!w-full" @change="saveQos" />
         </el-form-item>
-        <el-form-item label="单流保底 (Kbps)" class="!mb-0">
+        <el-form-item :label="t('qos.floor')" class="!mb-0">
           <el-input-number v-model="qos.interactiveFloorKbps" :min="64" :max="100000" :disabled="!qos.enabled" controls-position="right" class="!w-full" @change="saveQos" />
         </el-form-item>
       </div>
 
       <div v-if="qos.enabled" class="mt-3">
         <div class="text-xs flex flex-wrap gap-4" style="color: var(--bt-text-secondary)">
-          <span>容量估计: <b>{{ (state.status.qos?.capacityKbps || 0) }} Kbps</b></span>
-          <span>实测吞吐: <b>{{ (state.status.qos?.observedKbps || 0) }} Kbps</b></span>
-          <span>活跃通道: <b>{{ state.status.qos?.streamCount || 0 }}</b></span>
-          <span>限速次数: <b>{{ state.status.qos?.throttled || 0 }}</b></span>
+          <span>{{ t('qos.capacity') }}: <b>{{ (state.status.qos?.capacityKbps || 0) }} Kbps</b></span>
+          <span>{{ t('qos.observed') }}: <b>{{ (state.status.qos?.observedKbps || 0) }} Kbps</b></span>
+          <span>{{ t('qos.streams') }}: <b>{{ state.status.qos?.streamCount || 0 }}</b></span>
+          <span>{{ t('qos.throttled') }}: <b>{{ state.status.qos?.throttled || 0 }}</b></span>
         </div>
-        <el-table :data="state.status.qos?.streams || []" size="small" class="mt-2" empty-text="暂无活跃通道">
-          <el-table-column prop="id" label="通道" width="90" />
-          <el-table-column prop="role" label="类型" width="110" />
-          <el-table-column label="分类" width="120">
+        <el-table :data="state.status.qos?.streams || []" size="small" class="mt-2" :empty-text="t('qos.none')">
+          <el-table-column prop="id" :label="t('qos.channel')" width="90" />
+          <el-table-column prop="role" :label="t('common.name')" width="110" />
+          <el-table-column :label="t('qos.kind')" width="120">
             <template #default="{ row }">
               <el-tag :type="row.kind === 'interactive' ? 'success' : 'warning'" size="small">{{ row.kind }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="当前上限" width="140">
+          <el-table-column :label="t('qos.limit')" width="140">
             <template #default="{ row }">{{ row.limitKbps > 0 ? row.limitKbps + ' Kbps' : '不限' }}</template>
           </el-table-column>
-          <el-table-column label="平均包长" width="120">
+          <el-table-column :label="t('qos.avgPkt')" width="120">
             <template #default="{ row }">{{ Math.round(row.avgPktBytes) }} B</template>
           </el-table-column>
-          <el-table-column label="已传输" min-width="120">
+          <el-table-column :label="t('qos.sent')" min-width="120">
             <template #default="{ row }">{{ (row.bytes / 1048576).toFixed(2) }} MB</template>
           </el-table-column>
         </el-table>
@@ -238,6 +243,49 @@ async function save() {
   } finally {
     saving.value = false
   }
+}
+
+const importInput = ref(null)
+
+function exportConfig() {
+  const blob = new Blob([JSON.stringify(state.config, null, 2)], { type: 'application/json' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = `mytun-config-${new Date().toISOString().slice(0, 10)}.json`
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
+function pickImport() {
+  importInput.value?.click()
+}
+
+async function doImport(ev) {
+  const file = ev.target.files?.[0]
+  if (!file) return
+  try {
+    const text = await file.text()
+    const cfg = JSON.parse(text)
+    if (!cfg || typeof cfg !== 'object') throw new Error('不是有效的配置文件')
+    const res = await api.saveConfig({ ...cfg, revision: state.config.revision })
+    if (res?.config) applyImported(res.config)
+    if (res?.warning) ElMessage.warning(res.warning)
+    else ElMessage.success(t('config.imported'))
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    ev.target.value = ''
+  }
+}
+
+function applyImported(cfg) {
+  state.config.servers = cfg.servers || []
+  state.config.clients = cfg.clients || []
+  state.config.forwards = cfg.forwards || []
+  state.config.proxies = cfg.proxies || []
+  state.config.settings = cfg.settings || {}
+  state.config.revision = cfg.revision
+  state.dirty = false
 }
 
 async function changePassword() {

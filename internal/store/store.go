@@ -517,6 +517,43 @@ func (s *Store) OldestAuditTS() int64 {
 	return ts
 }
 
+// TrafficBucket is one minute of aggregated traffic.
+type TrafficBucket struct {
+	TS        int64 `json:"ts"`
+	Conns     int64 `json:"conns"`
+	BytesUp   int64 `json:"bytesUp"`
+	BytesDown int64 `json:"bytesDown"`
+	Errors    int64 `json:"errors"`
+}
+
+// TrafficSeries aggregates the audit table into per-minute buckets.
+func (s *Store) TrafficSeries(minutes int) ([]TrafficBucket, error) {
+	if minutes <= 0 {
+		minutes = 60
+	}
+	since := time.Now().Add(-time.Duration(minutes) * time.Minute).UnixMilli()
+	rows, err := s.db.Query(`
+		SELECT (ts/60000)*60000 AS bucket,
+		       COUNT(*) AS conns,
+		       COALESCE(SUM(bytes_up),0),
+		       COALESCE(SUM(bytes_down),0),
+		       COALESCE(SUM(CASE WHEN status!='success' THEN 1 ELSE 0 END),0)
+		FROM audit WHERE ts >= ? GROUP BY bucket ORDER BY bucket ASC`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]TrafficBucket, 0, minutes)
+	for rows.Next() {
+		var b TrafficBucket
+		if err := rows.Scan(&b.TS, &b.Conns, &b.BytesUp, &b.BytesDown, &b.Errors); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 // AuditCount returns the number of stored audit rows.
 func (s *Store) AuditCount() int64 {
 	var n int64

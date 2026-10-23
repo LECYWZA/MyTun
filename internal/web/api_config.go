@@ -9,6 +9,10 @@ import (
 	"github.com/LECYWZA/mytun/internal/store"
 )
 
+// maskedPassword is what the API returns instead of the real tunnel password.
+// The UI can echo it back unchanged to mean "keep the existing secret".
+const maskedPassword = "********"
+
 // ConfigPayload is the whole editable configuration, mirroring the shape the
 // original Vue console expects.
 type ConfigPayload struct {
@@ -18,6 +22,8 @@ type ConfigPayload struct {
 	Proxies  []store.ProxyRow   `json:"proxies"`
 	Settings map[string]string  `json:"settings"`
 	Version  int                `json:"version"`
+	// Revision guards against two consoles overwriting each other.
+	Revision int64 `json:"revision"`
 }
 
 func (s *Server) loadConfig() (*ConfigPayload, error) {
@@ -37,9 +43,27 @@ func (s *Server) loadConfig() (*ConfigPayload, error) {
 	if err != nil {
 		return nil, err
 	}
+	rev, _ := strconv.ParseInt(s.store.GetSetting("config_revision", "0"), 10, 64)
 	settings := s.store.AllSettings()
 	delete(settings, "web_pass")
 	delete(settings, "jwt_secret")
+	// Never ship secrets to the browser: mask them and treat an unchanged mask
+	// as "keep what is stored".
+	for i := range servers {
+		if servers[i].Password != "" {
+			servers[i].Password = maskedPassword
+		}
+	}
+	for i := range clients {
+		if clients[i].Password != "" {
+			clients[i].Password = maskedPassword
+		}
+	}
+	for i := range proxies {
+		if proxies[i].Pass != "" {
+			proxies[i].Pass = maskedPassword
+		}
+	}
 	// Never hand the UI a null array: it forces every consumer to special-case it.
 	if servers == nil {
 		servers = []store.ServerRow{}
@@ -54,7 +78,7 @@ func (s *Server) loadConfig() (*ConfigPayload, error) {
 		proxies = []store.ProxyRow{}
 	}
 	return &ConfigPayload{Servers: servers, Clients: clients, Forwards: forwards, Proxies: proxies,
-		Settings: settings, Version: 2}, nil
+		Settings: settings, Version: 2, Revision: rev}, nil
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -70,6 +94,13 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		var payload ConfigPayload
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			writeJSON(w, 400, map[string]any{"error": "bad json: " + err.Error()})
+			return
+		}
+		cur, _ := strconv.ParseInt(s.store.GetSetting("config_revision", "0"), 10, 64)
+		if payload.Revision != 0 && payload.Revision != cur {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": "配置已被其他窗口修改，请刷新后重试", "revision": cur,
+			})
 			return
 		}
 		if err := s.saveConfig(&payload); err != nil {
@@ -91,11 +122,58 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// keepSecret returns the stored secret when the client echoed the mask back.
+func (s *Server) keepServerSecret(row *store.ServerRow) {
+	if row.Password != maskedPassword {
+		return
+	}
+	if rows, err := s.store.Servers(); err == nil {
+		for _, r := range rows {
+			if r.ID == row.ID {
+				row.Password = r.Password
+				return
+			}
+		}
+	}
+	row.Password = ""
+}
+
+func (s *Server) keepClientSecret(row *store.ClientRow) {
+	if row.Password != maskedPassword {
+		return
+	}
+	if rows, err := s.store.Clients(); err == nil {
+		for _, r := range rows {
+			if r.ID == row.ID {
+				row.Password = r.Password
+				return
+			}
+		}
+	}
+	row.Password = ""
+}
+
+func (s *Server) keepProxySecret(row *store.ProxyRow) {
+	if row.Pass != maskedPassword {
+		return
+	}
+	if rows, err := s.store.Proxies(); err == nil {
+		for _, r := range rows {
+			if r.ID == row.ID {
+				row.Pass = r.Pass
+				return
+			}
+		}
+	}
+	row.Pass = ""
+}
+
 func (s *Server) saveConfig(p *ConfigPayload) error {
 	// Replace semantics: rows absent from the payload are deleted.
 	keepS := map[string]bool{}
 	for _, r := range p.Servers {
 		keepS[r.ID] = true
+		s.keepServerSecret(&r)
 		if err := s.store.UpsertServer(r); err != nil {
 			return err
 		}
@@ -110,6 +188,7 @@ func (s *Server) saveConfig(p *ConfigPayload) error {
 	keepC := map[string]bool{}
 	for _, r := range p.Clients {
 		keepC[r.ID] = true
+		s.keepClientSecret(&r)
 		if err := s.store.UpsertClient(r); err != nil {
 			return err
 		}
@@ -138,6 +217,7 @@ func (s *Server) saveConfig(p *ConfigPayload) error {
 	keepP := map[string]bool{}
 	for _, r := range p.Proxies {
 		keepP[r.ID] = true
+		s.keepProxySecret(&r)
 		if err := s.store.UpsertProxy(r); err != nil {
 			return err
 		}
@@ -150,11 +230,13 @@ func (s *Server) saveConfig(p *ConfigPayload) error {
 	}
 
 	for k, v := range p.Settings {
-		if k == "web_pass" || k == "jwt_secret" {
+		if k == "web_pass" || k == "jwt_secret" || k == "config_revision" {
 			continue
 		}
 		_ = s.store.SetSetting(k, v)
 	}
+	cur, _ := strconv.ParseInt(s.store.GetSetting("config_revision", "0"), 10, 64)
+	_ = s.store.SetSetting("config_revision", strconv.FormatInt(cur+1, 10))
 	return nil
 }
 
@@ -230,7 +312,10 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	if body.Username == "" {
 		body.Username = user
 	}
-	if !s.checkPassword(body.Username, body.OldPassword) {
+	// On the local machine the operator is already trusted (they can read the
+	// database file anyway), so the old password is optional there.
+	local := s.localBypass() && s.isLocal(r)
+	if !local && !s.checkPassword(body.Username, body.OldPassword) {
 		writeJSON(w, 401, map[string]any{"error": "原密码错误"})
 		return
 	}

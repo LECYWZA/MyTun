@@ -24,6 +24,7 @@ import (
 	"github.com/LECYWZA/mytun/internal/logging"
 	"github.com/LECYWZA/mytun/internal/runtime"
 	"github.com/LECYWZA/mytun/internal/store"
+	"github.com/LECYWZA/mytun/internal/tunnel"
 	"github.com/LECYWZA/mytun/internal/sysproxy"
 	"github.com/LECYWZA/mytun/internal/web"
 )
@@ -34,9 +35,12 @@ var Version = "0.1.0"
 func main() {
 	dataDir := defaultDataDir()
 	webPort := 8899
-	webHost := "0.0.0.0"
+	// Loopback by default: the console holds the tunnel passwords. Pass
+	// --host 0.0.0.0 explicitly to expose it on the LAN.
+	webHost := "127.0.0.1"
 	autoStart := true
 	generateOnly := false
+	useTLS := false
 	dnsServer := ""
 
 	// Watchdog mode runs before any normal initialisation.
@@ -74,6 +78,8 @@ func main() {
 				dnsServer = args[i+1]
 				i++
 			}
+		case "--tls":
+			useTLS = true
 		case "--no-autostart":
 			autoStart = false
 		case "--init-only":
@@ -121,7 +127,15 @@ func main() {
 		log.Fatalf("初始化控制台失败: %v", err)
 	}
 	addr := net.JoinHostPort(webHost, fmt.Sprint(webPort))
-	if err := console.Start(addr); err != nil {
+	if useTLS {
+		certPair, err := tunnel.LoadOrCreateCert(filepath.Join(dataDir, "console-tls"), "mytun-console")
+		if err != nil {
+			log.Fatalf("生成控制台证书失败: %v", err)
+		}
+		if err := console.StartTLS(addr, certPair.Cert); err != nil {
+			log.Fatalf("控制台监听 %s(TLS) 失败: %v", addr, err)
+		}
+	} else if err := console.Start(addr); err != nil {
 		log.Fatalf("控制台监听 %s 失败: %v", addr, err)
 	}
 
@@ -148,7 +162,7 @@ func main() {
 		log.Printf("启动隧道组件时出现问题: %v", err)
 	}
 
-	printBanner(webHost, webPort, dataDir, dbPath, st, rt)
+	printBanner(webHost, webPort, dataDir, dbPath, st, rt, useTLS)
 	checkResidue(rt)
 
 	// Periodic status push to websocket clients keeps the UI live without
@@ -224,7 +238,8 @@ func usage() {
 	fmt.Print(`MyTun ` + Version + `
 用法: mytun [选项]
   --port <端口>      Web 控制台端口（默认 8899）
-  --host <地址>      Web 控制台监听地址（默认 0.0.0.0）
+  --host <地址>      Web 控制台监听地址（默认 127.0.0.1；局域网访问用 0.0.0.0）
+  --tls              控制台启用 HTTPS（自签证书，自动生成在数据目录）
   --data <目录>      数据目录（默认系统配置目录下的 MyTun）
   --no-autostart     启动时不自动拉起已启用的隧道/代理
   --init-only        仅初始化数据库后退出
@@ -261,7 +276,7 @@ func randomPassword() string {
 	return string(b)
 }
 
-func printBanner(host string, port int, dataDir, dbPath string, st *store.Store, rt *runtime.Runtime) {
+func printBanner(host string, port int, dataDir, dbPath string, st *store.Store, rt *runtime.Runtime, useTLS bool) {
 	displayHost := host
 	if host == "0.0.0.0" || host == "" || host == "::" {
 		displayHost = "127.0.0.1"
@@ -274,7 +289,11 @@ func printBanner(host string, port int, dataDir, dbPath string, st *store.Store,
 	fmt.Println("  ██║ ╚═╝ ██║   ██║      ██║   ╚██████╔╝██║ ╚████║")
 	fmt.Println("  ╚═╝     ╚═╝   ╚═╝      ╚═╝    ╚═════╝ ╚═╝  ╚═══╝")
 	fmt.Println()
-	fmt.Printf("  控制台:   http://%s:%d\n", displayHost, port)
+	scheme := "http"
+	if useTLS {
+		scheme = "https"
+	}
+	fmt.Printf("  控制台:   %s://%s:%d\n", scheme, displayHost, port)
 	fmt.Printf("  用户名:   %s\n", st.GetSetting("web_user", "admin"))
 	fmt.Printf("  数据目录: %s\n", dataDir)
 	fmt.Printf("  数据库:   %s\n", dbPath)

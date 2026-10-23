@@ -219,8 +219,16 @@ func (c *ClientConn) dialAndServe() error {
 		}
 	}
 
-	authCh := make(chan bool, 1)
-	sess.OnAuthDone = func(ok bool) { authCh <- ok }
+	authCh := make(chan string, 1) // empty string = success
+	sess.OnAuthDone = func(ok bool, reason string) {
+		if ok {
+			authCh <- ""
+		} else if reason != "" {
+			authCh <- reason
+		} else {
+			authCh <- "authentication rejected"
+		}
+	}
 
 	if err := sess.SendAuth(c.cfg.Password, c.cfg.ClientID, "mytun-2"); err != nil {
 		_ = sess.Close()
@@ -231,10 +239,10 @@ func (c *ClientConn) dialAndServe() error {
 	go func() { runErr <- sess.Run() }()
 
 	select {
-	case ok := <-authCh:
-		if !ok {
+	case reason := <-authCh:
+		if reason != "" {
 			_ = sess.Close()
-			return errors.New("authentication failed (password mismatch)")
+			return fmt.Errorf("认证失败：%s（请检查两端密码是否一致）", reason)
 		}
 	case err := <-runErr:
 		return fmt.Errorf("session ended during auth: %w", err)

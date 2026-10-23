@@ -1,0 +1,23 @@
+[Unit]
+Description=MyTun single-port tunnel and mixed proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Data directory holds mytun.db and the generated TLS material.
+ExecStart=/usr/local/bin/mytun --data /var/lib/mytun --host 127.0.0.1 --port 8899
+Restart=always
+RestartSec=3
+# Hardening: the process only needs its data directory and the network.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mytun
+AmbientCapabilities=
+User=mytun
+Group=mytun
+
+[Install]
+WantedBy=multi-user.target

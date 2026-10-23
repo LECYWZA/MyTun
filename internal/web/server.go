@@ -4,6 +4,7 @@ package web
 
 import (
 	"crypto/hmac"
+	"crypto/tls"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -34,6 +35,15 @@ import (
 //go:embed static
 var staticFS embed.FS
 
+const (
+	// accessTTL is deliberately short: it is what the SPA holds in memory.
+	accessTTL = time.Hour
+	// refreshTTL keeps the user signed in on their own machine for a week.
+	refreshTTL = 7 * 24 * time.Hour
+	accessCookie  = "mytun_at"
+	refreshCookie = "mytun_rt"
+)
+
 // Server is the HTTP console.
 type Server struct {
 	store *store.Store
@@ -46,6 +56,7 @@ type Server struct {
 
 	wsMu    sync.Mutex
 	wsConns map[*wsClient]struct{}
+	tickets map[string]time.Time
 
 	srv     *http.Server
 	ln      net.Listener
@@ -68,6 +79,7 @@ func New(o Options) (*Server, error) {
 		rt:      o.Runtime,
 		log:     o.Log,
 		wsConns: map[*wsClient]struct{}{},
+		tickets: map[string]time.Time{},
 		login:   newLoginGuard(10, time.Minute, 60*time.Second),
 		dataDir: o.DataDir,
 	}
@@ -98,9 +110,58 @@ func New(o Options) (*Server, error) {
 	return s, nil
 }
 
+// hashPassword stores "salt$hash" so two identical passwords do not collide and
+// precomputed tables are useless.
 func hashPassword(pw string) string {
+	salt := make([]byte, 16)
+	_, _ = rand.Read(salt)
+	return hex.EncodeToString(salt) + "$" + hashWithSalt(salt, pw)
+}
+
+func hashWithSalt(salt []byte, pw string) string {
+	h := sha256.New()
+	h.Write(salt)
+	h.Write([]byte("::"))
+	h.Write([]byte(pw))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// verifyPassword accepts both the current salted format and the legacy
+// unsalted digest (so upgrades keep working).
+func verifyPassword(stored, pw string) (ok bool, legacy bool) {
+	if saltHex, hash, found := strings.Cut(stored, "$"); found {
+		salt, err := hex.DecodeString(saltHex)
+		if err != nil {
+			return false, false
+		}
+		return subtle.ConstantTimeCompare([]byte(hashWithSalt(salt, pw)), []byte(hash)) == 1, false
+	}
 	sum := sha256.Sum256([]byte("mytun::" + pw))
-	return hex.EncodeToString(sum[:])
+	return subtle.ConstantTimeCompare([]byte(hex.EncodeToString(sum[:])), []byte(stored)) == 1, true
+}
+
+// StartTLS listens with the supplied certificate.
+func (s *Server) StartTLS(addr string, cert tls.Certificate) error {
+	mux := http.NewServeMux()
+	s.routes(mux)
+	s.srv = &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 15 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		TLSConfig:         &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	s.ln = ln
+	go func() {
+		if err := s.srv.ServeTLS(ln, "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("[web] serve tls: %v", err)
+		}
+	}()
+	return nil
 }
 
 // Start listens on addr.
@@ -150,6 +211,7 @@ func (s *Server) Stop() {
 func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/login", s.handleLogin)
 	mux.HandleFunc("/api/logout", s.handleLogout)
+	mux.HandleFunc("/api/refresh", s.handleRefresh)
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/local/status", s.handleLocalStatus)
 
@@ -171,6 +233,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.Handle("/api/proxies/", auth(http.HandlerFunc(s.handleProxies)))
 	mux.Handle("/api/traffic-logs", auth(http.HandlerFunc(s.handleTrafficLogs)))
 	mux.Handle("/api/traffic-logs/prune", auth(http.HandlerFunc(s.handlePruneLogs)))
+	mux.Handle("/api/traffic-logs/export", auth(http.HandlerFunc(s.handleAuditExport)))
+	mux.Handle("/api/stats/traffic", auth(http.HandlerFunc(s.handleTrafficSeries)))
 	mux.Handle("/api/qos", auth(http.HandlerFunc(s.handleQoS)))
 	mux.Handle("/api/test-latency", auth(http.HandlerFunc(s.handleTestLatency)))
 	mux.Handle("/api/test-speed", auth(http.HandlerFunc(s.handleTestSpeed)))
@@ -182,6 +246,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.Handle("/api/files/", auth(http.HandlerFunc(s.handleFiles)))
 	mux.Handle("/api/network-interfaces", auth(http.HandlerFunc(s.handleInterfaces)))
 	mux.HandleFunc("/ws", s.handleWS)
+	mux.Handle("/api/ws-ticket", auth(http.HandlerFunc(s.handleWSTicket)))
 
 	sub, err := fs.Sub(staticFS, "static")
 	if err != nil {
@@ -256,10 +321,32 @@ func (s *Server) verifyToken(tok string) (string, bool) {
 	return bits[0], true
 }
 
+// isLocal reports whether the request comes from the same machine.
+func (s *Server) isLocal(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// localBypass mirrors the console setting: loopback requests are trusted.
+// Anyone sitting at the machine already has access to the database file, so a
+// password prompt there is pure friction.
+func (s *Server) localBypass() bool {
+	return s.store.GetSetting("allow_local_bypass", "true") == "true"
+}
+
 func (s *Server) authenticated(r *http.Request) bool {
-	if c, err := r.Cookie("mytun_token"); err == nil {
-		if _, ok := s.verifyToken(c.Value); ok {
-			return true
+	if s.localBypass() && s.isLocal(r) {
+		return true
+	}
+	for _, name := range []string{accessCookie, refreshCookie, "mytun_token"} {
+		if c, err := r.Cookie(name); err == nil {
+			if _, ok := s.verifyToken(c.Value); ok {
+				return true
+			}
 		}
 	}
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
@@ -278,11 +365,19 @@ func (s *Server) authenticated(r *http.Request) bool {
 
 func (s *Server) checkPassword(user, pass string) bool {
 	wantUser := s.store.GetSetting("web_user", "admin")
-	wantPass := s.store.GetSetting("web_pass", hashPassword("password"))
+	wantPass := s.store.GetSetting("web_pass", "")
+	if wantPass == "" {
+		wantPass = hashPassword("password")
+	}
 	if subtle.ConstantTimeCompare([]byte(user), []byte(wantUser)) != 1 {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(hashPassword(pass)), []byte(wantPass)) == 1
+	ok, legacy := verifyPassword(wantPass, pass)
+	if ok && legacy {
+		// transparently upgrade the on-disk hash
+		_ = s.store.SetSetting("web_pass", hashPassword(pass))
+	}
+	return ok
 }
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {
@@ -319,12 +414,21 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.login.reset(ip)
-	tok := s.token(body.Username, time.Now().Add(7*24*time.Hour))
+	access := s.token(body.Username, time.Now().Add(accessTTL))
+	refresh := s.token(body.Username, time.Now().Add(refreshTTL))
+	secure := r.TLS != nil
 	http.SetCookie(w, &http.Cookie{
-		Name: "mytun_token", Value: tok, Path: "/", HttpOnly: true,
-		SameSite: http.SameSiteLaxMode, MaxAge: 7 * 24 * 3600,
+		Name: refreshCookie, Value: refresh, Path: "/", HttpOnly: true,
+		SameSite: http.SameSiteLaxMode, Secure: secure, MaxAge: int(refreshTTL.Seconds()),
 	})
-	writeJSON(w, http.StatusOK, map[string]any{"accessToken": tok, "username": body.Username})
+	http.SetCookie(w, &http.Cookie{
+		Name: accessCookie, Value: access, Path: "/", HttpOnly: true,
+		SameSite: http.SameSiteLaxMode, Secure: secure, MaxAge: int(accessTTL.Seconds()),
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accessToken": access, "expiresIn": int(accessTTL.Seconds()),
+		"refreshExpiresIn": int(refreshTTL.Seconds()), "username": body.Username,
+	})
 }
 
 // loginGuard throttles password attempts per client IP so a wrong password
@@ -368,6 +472,14 @@ func (g *loginGuard) fail(ip string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := time.Now()
+	// Bound the map: only IPs that failed recently are interesting anyway.
+	if len(g.attempts) > 4096 {
+		for k, a := range g.attempts {
+			if now.Sub(a.first) > g.window {
+				delete(g.attempts, k)
+			}
+		}
+	}
 	a, ok := g.attempts[ip]
 	if !ok || now.Sub(a.first) > g.window {
 		g.attempts[ip] = &attempts{count: 1, first: now}
@@ -394,8 +506,46 @@ func clientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
+// handleRefresh exchanges a valid refresh cookie for a fresh access token, so
+// the SPA never has to ask for the password again on the same machine.
+func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "POST only"})
+		return
+	}
+	if s.authenticated(r) && (s.localBypass() && s.isLocal(r)) {
+		// Local machine: always fine, issue a fresh pair.
+	}
+	c, err := r.Cookie(refreshCookie)
+	if err != nil {
+		if s.localBypass() && s.isLocal(r) {
+			access := s.token(s.store.GetSetting("web_user", "admin"), time.Now().Add(accessTTL))
+			writeJSON(w, http.StatusOK, map[string]any{"accessToken": access, "local": true})
+			return
+		}
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "no session"})
+		return
+	}
+	user, ok := s.verifyToken(c.Value)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "session expired"})
+		return
+	}
+	access := s.token(user, time.Now().Add(accessTTL))
+	secure := r.TLS != nil
+	http.SetCookie(w, &http.Cookie{
+		Name: accessCookie, Value: access, Path: "/", HttpOnly: true,
+		SameSite: http.SameSiteLaxMode, Secure: secure, MaxAge: int(accessTTL.Seconds()),
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"accessToken": access, "expiresIn": int(accessTTL.Seconds()), "username": user,
+	})
+}
+
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{Name: "mytun_token", Value: "", Path: "/", MaxAge: -1})
+	for _, n := range []string{accessCookie, refreshCookie, "mytun_token"} {
+		http.SetCookie(w, &http.Cookie{Name: n, Value: "", Path: "/", MaxAge: -1})
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -529,10 +679,13 @@ var upgrader = websocket.Upgrader{
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	if !s.authenticated(r) {
-		// Browsers cannot set headers on websocket; fall back to a query token.
-		if tok := r.URL.Query().Get("token"); tok == "" || !s.verifyTokenOK(tok) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
+		q := r.URL.Query()
+		if !s.consumeTicket(q.Get("ticket")) {
+			// legacy fallback: long-lived token in the query string
+			if tok := q.Get("token"); tok == "" || !s.verifyTokenOK(tok) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
 		}
 	}
 	c, err := upgrader.Upgrade(w, r, nil)
@@ -578,6 +731,39 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	delete(s.wsConns, client)
 	s.wsMu.Unlock()
 	client.close()
+}
+
+// handleWSTicket issues a short-lived, single-use ticket. Browsers cannot set
+// headers on a websocket handshake, and putting the long-lived session token in
+// the URL leaks it into proxy logs; a 30s one-shot ticket is harmless there.
+func (s *Server) handleWSTicket(w http.ResponseWriter, r *http.Request) {
+	b := make([]byte, 24)
+	_, _ = rand.Read(b)
+	ticket := hex.EncodeToString(b)
+	s.wsMu.Lock()
+	now := time.Now()
+	for k, exp := range s.tickets {
+		if now.After(exp) {
+			delete(s.tickets, k)
+		}
+	}
+	s.tickets[ticket] = now.Add(30 * time.Second)
+	s.wsMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{"ticket": ticket, "expiresIn": 30})
+}
+
+func (s *Server) consumeTicket(t string) bool {
+	if t == "" {
+		return false
+	}
+	s.wsMu.Lock()
+	defer s.wsMu.Unlock()
+	exp, ok := s.tickets[t]
+	if !ok {
+		return false
+	}
+	delete(s.tickets, t) // single use
+	return time.Now().Before(exp)
 }
 
 func (s *Server) verifyTokenOK(tok string) bool {
