@@ -52,9 +52,10 @@
           <el-table-column :label="t('chat.size')" width="90">
             <template #default="{ row }">{{ fmtSize(row.size) }}</template>
           </el-table-column>
-          <el-table-column :label="t('common.actions')" width="80">
+          <el-table-column :label="t('common.actions')" width="140">
             <template #default="{ row }">
               <el-button size="small" text type="primary" @click="download(row.name)">{{ t('chat.download') }}</el-button>
+              <el-button size="small" text type="danger" @click="removeFile(row.name)">{{ t('common.delete') }}</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -65,7 +66,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { api } from '../api'
 import { t } from '../i18n'
@@ -140,6 +141,21 @@ async function onFile(ev) {
 
 function download(name) {
   window.open(`/api/files/${encodeURIComponent(name)}`, '_blank')
+}
+
+async function removeFile(name) {
+  try {
+    await ElMessageBox.confirm(`删除 ${name}？`, t('common.confirm'), { type: 'warning' })
+  } catch {
+    return
+  }
+  try {
+    await api.deleteFile(name)
+    ElMessage.success(t('common.delete') + ' OK')
+    await loadFiles()
+  } catch (e) {
+    ElMessage.error(e.message)
+  }
 }
 
 onMounted(() => {

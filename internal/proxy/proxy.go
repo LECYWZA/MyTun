@@ -73,6 +73,8 @@ type Proxy struct {
 	listeners map[int]*proxyListener
 	rules     map[int]Rule
 	totalConn atomic.Int64
+	// sem caps concurrent proxied connections so a burst cannot exhaust fds.
+	sem chan struct{}
 }
 
 type proxyListener struct {
@@ -84,7 +86,7 @@ type proxyListener struct {
 // New creates a proxy manager.
 func New(role string, resolve Resolver, onEvent func(Event)) *Proxy {
 	return &Proxy{role: role, resolve: resolve, onEvent: onEvent,
-		listeners: map[int]*proxyListener{}, rules: map[int]Rule{}}
+		listeners: map[int]*proxyListener{}, rules: map[int]Rule{}, sem: make(chan struct{}, 2048)}
 }
 
 // Apply syncs listeners with the desired rules.
@@ -176,7 +178,16 @@ func (p *Proxy) acceptLoop(l *proxyListener) {
 			continue
 		}
 		p.totalConn.Add(1)
-		go p.handle(conn, l.rule)
+		select {
+		case p.sem <- struct{}{}:
+			go func() {
+				defer func() { <-p.sem }()
+				p.handle(conn, l.rule)
+			}()
+		default:
+			// Over the cap: drop immediately rather than queueing forever.
+			_ = conn.Close()
+		}
 	}
 }
 

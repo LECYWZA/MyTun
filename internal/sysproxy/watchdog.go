@@ -26,10 +26,11 @@ func StartWatchdog(dataDir string, port int) error {
 		return err
 	}
 	lock := filepath.Join(dataDir, "watchdog.lock")
-	if _, err := os.Stat(lock); err == nil {
-		// Another watchdog is already supervising this installation.
+	if pid, ok := readLockPID(lock); ok && processAlive(pid) {
+		// A live watchdog already supervises this installation.
 		return nil
 	}
+	_ = os.Remove(lock) // stale lock from a crashed watchdog
 	cmd := exec.Command(exe, watchdogFlag, fmt.Sprintf("http://127.0.0.1:%d/api/health", port), dataDir)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -48,6 +49,21 @@ func IsWatchdogArgs(args []string) (healthURL string, dataDir string, ok bool) {
 		}
 	}
 	return "", "", false
+}
+
+func readLockPID(path string) (int, bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	n := 0
+	for _, c := range string(b) {
+		if c < '0' || c > '9' {
+			break
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n, n > 0
 }
 
 // RunWatchdog blocks until the main process is gone, then restores the system

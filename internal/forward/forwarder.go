@@ -58,6 +58,8 @@ type Forwarder struct {
 	mu       sync.Mutex
 	listeners map[int]*listener
 	rules     map[int]Rule
+	// sem caps concurrent bridged connections.
+	sem chan struct{}
 }
 
 type listener struct {
@@ -74,6 +76,7 @@ func New(role string, resolve SessionResolver, onEvent func(Event)) *Forwarder {
 		onEvent:   onEvent,
 		listeners: map[int]*listener{},
 		rules:     map[int]Rule{},
+		sem:       make(chan struct{}, 2048),
 	}
 }
 
@@ -177,7 +180,15 @@ func (f *Forwarder) acceptLoop(l *listener) {
 				continue
 			}
 		}
-		go f.handleLocalConn(l.rule, conn)
+		select {
+		case f.sem <- struct{}{}:
+			go func() {
+				defer func() { <-f.sem }()
+				f.handleLocalConn(l.rule, conn)
+			}()
+		default:
+			_ = conn.Close()
+		}
 	}
 }
 

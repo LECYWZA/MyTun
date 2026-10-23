@@ -294,6 +294,20 @@ func metaInt64(v any) int64 {
 	return 0
 }
 
+// listenCheck reports the first bind failure across IPv4 and IPv6 wildcards.
+// Checking only 0.0.0.0 reported "available" for a port already taken on the
+// v6 wildcard (dual-stack listeners), which confused users.
 func listenCheck(port int) (net.Listener, error) {
-	return net.Listen("tcp", "0.0.0.0:"+strconv.Itoa(port))
+	p := strconv.Itoa(port)
+	ln4, err := net.Listen("tcp4", "0.0.0.0:"+p)
+	if err != nil {
+		return nil, err
+	}
+	ln6, err6 := net.Listen("tcp6", "[::]:"+p)
+	if err6 != nil {
+		_ = ln4.Close()
+		return nil, err6
+	}
+	_ = ln6.Close()
+	return ln4, nil
 }

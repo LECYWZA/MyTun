@@ -32,6 +32,7 @@
             <el-switch
               v-model="sysproxyOn"
               size="small"
+              :disabled="sysproxySupported === false"
               style="--el-switch-on-color: var(--el-color-primary); --el-switch-off-color: var(--el-text-color-placeholder)"
               :loading="sysproxyBusy"
               @change="toggleSystemProxy"
@@ -110,6 +111,7 @@ const isDark = ref(localStorage.getItem('mytun-theme') !== 'light')
 const sysproxyOn = ref(false)
 const sysproxyBusy = ref(false)
 const sysproxyStatus = computed(() => state.systemProxy)
+const sysproxySupported = computed(() => state.systemProxy?.supported !== false)
 
 const tunnelOnline = computed(() => (state.status.inbound || []).length > 0 || (state.status.clients || []).some((c) => c.status === 'connected'))
 const tunnelChipTip = computed(() => {

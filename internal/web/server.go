@@ -42,6 +42,7 @@ type Server struct {
 
 	secret []byte
 	authMu sync.Mutex
+	login  *loginGuard
 
 	wsMu    sync.Mutex
 	wsConns map[*wsClient]struct{}
@@ -67,6 +68,7 @@ func New(o Options) (*Server, error) {
 		rt:      o.Runtime,
 		log:     o.Log,
 		wsConns: map[*wsClient]struct{}{},
+		login:   newLoginGuard(10, time.Minute, 60*time.Second),
 		dataDir: o.DataDir,
 	}
 	secret := o.Store.GetSetting("jwt_secret", "")
@@ -149,6 +151,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/login", s.handleLogin)
 	mux.HandleFunc("/api/logout", s.handleLogout)
 	mux.HandleFunc("/api/health", s.handleHealth)
+	mux.HandleFunc("/api/local/status", s.handleLocalStatus)
 
 	auth := s.requireAuth
 	mux.Handle("/api/config", auth(http.HandlerFunc(s.handleConfig)))
@@ -305,10 +308,17 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad json"})
 		return
 	}
+	ip := clientIP(r)
+	if !s.login.allow(ip) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "登录尝试过于频繁，请稍后再试"})
+		return
+	}
 	if !s.checkPassword(body.Username, body.Password) {
+		s.login.fail(ip)
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "用户名或密码错误"})
 		return
 	}
+	s.login.reset(ip)
 	tok := s.token(body.Username, time.Now().Add(7*24*time.Hour))
 	http.SetCookie(w, &http.Cookie{
 		Name: "mytun_token", Value: tok, Path: "/", HttpOnly: true,
@@ -317,9 +327,118 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"accessToken": tok, "username": body.Username})
 }
 
+// loginGuard throttles password attempts per client IP so a wrong password
+// loop cannot hammer the console (or the CPU cost of hashing).
+type loginGuard struct {
+	mu       sync.Mutex
+	attempts map[string]*attempts
+	max      int
+	window   time.Duration
+	lockout  time.Duration
+}
+
+type attempts struct {
+	count    int
+	first    time.Time
+	lockedTo time.Time
+}
+
+func newLoginGuard(max int, window, lockout time.Duration) *loginGuard {
+	return &loginGuard{attempts: map[string]*attempts{}, max: max, window: window, lockout: lockout}
+}
+
+func (g *loginGuard) allow(ip string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	a, ok := g.attempts[ip]
+	if !ok {
+		return true
+	}
+	now := time.Now()
+	if now.Before(a.lockedTo) {
+		return false
+	}
+	if now.Sub(a.first) > g.window {
+		delete(g.attempts, ip)
+	}
+	return true
+}
+
+func (g *loginGuard) fail(ip string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := time.Now()
+	a, ok := g.attempts[ip]
+	if !ok || now.Sub(a.first) > g.window {
+		g.attempts[ip] = &attempts{count: 1, first: now}
+		return
+	}
+	a.count++
+	if a.count >= g.max {
+		a.lockedTo = now.Add(g.lockout)
+		a.count = 0
+		a.first = now
+	}
+}
+
+func (g *loginGuard) reset(ip string) {
+	g.mu.Lock()
+	delete(g.attempts, ip)
+	g.mu.Unlock()
+}
+
+func clientIP(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: "mytun_token", Value: "", Path: "/", MaxAge: -1})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleLocalStatus is an unauthenticated, loopback-only summary used by the
+// Android shell to render live state in its notification. Keeping it auth-free
+// avoids storing the console password in the app just to draw a notification.
+func (s *Server) handleLocalStatus(w http.ResponseWriter, r *http.Request) {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if host != "127.0.0.1" && host != "::1" {
+		http.Error(w, "loopback only", http.StatusForbidden)
+		return
+	}
+	clients := make([]string, 0, 4)
+	for id, sess := range s.rt.Sessions() {
+		if sess.IsAuthed() {
+			clients = append(clients, id)
+		}
+	}
+	running := 0
+	port := 0
+	if servers, ok := s.rt.Status()["servers"].([]map[string]any); ok {
+		for _, sv := range servers {
+			if b, _ := sv["running"].(bool); b {
+				running++
+				if p, _ := sv["addr"].(string); p != "" && port == 0 {
+					if _, ps, err := net.SplitHostPort(p); err == nil {
+						fmt.Sscanf(ps, "%d", &port)
+					}
+				}
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"online":  len(clients) > 0,
+		"clients": clients,
+		"count":   len(clients),
+		"servers": running,
+		"port":    port,
+		"ts":      time.Now().Unix(),
+	})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
