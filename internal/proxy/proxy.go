@@ -612,15 +612,14 @@ func pipeBoth(conn net.Conn, br *bufio.Reader, peer net.Conn) (int64, int64) {
 		down.Store(n)
 		done <- struct{}{}
 	}()
-	// Wait for BOTH directions before closing. The request side reaching EOF only
-	// means the client finished sending (HTTP fans out in one half-duplex burst);
-	// closing here would truncate the response stream mid-body.
+	// Standard proxy teardown: the FIRST direction to finish ends the exchange.
+	// Waiting for both strands forever hangs on keep-alive clients (the request
+	// reader never sees EOF until the socket closes), which is exactly the bug
+	// that made a second curl call stall.
 	<-done
-	select {
-	case <-done:
-	case <-time.After(5 * time.Minute):
-	}
 	_ = peer.Close()
+	_ = conn.Close()
+	<-done
 	return up.Load(), down.Load()
 }
 

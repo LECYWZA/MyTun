@@ -314,7 +314,12 @@ func bridge(conn net.Conn, ch *mux.Channel) (int64, int64) {
 		done <- struct{}{}
 	}()
 	<-done
-	<-done
+	// Half-close both ends so the remaining direction drains, but never wait
+	// forever on a peer that forgets to close.
+	select {
+	case <-done:
+	case <-time.After(10 * time.Minute):
+	}
 	return up.Load(), down.Load()
 }
 

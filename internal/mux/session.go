@@ -170,6 +170,10 @@ func (c *Channel) Close() error {
 
 	if !alreadyRemote {
 		_ = c.session.writeFrame(TypeClose, c.id, nil)
+		// Control frames must hit the wire immediately: without this the peer
+		// never sees the half of the stream that was still sitting in the write
+		// buffer, and io.ReadAll on the far side blocks forever.
+		_ = c.session.enc.Flush()
 	}
 	c.session.dropChannel(c.id)
 	return nil
