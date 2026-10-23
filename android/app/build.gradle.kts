@@ -40,10 +40,14 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    // The bundled Go core is plain data in assets; keep it uncompressed so the
-    // process can exec it from filesDir after a byte copy.
-    androidResources {
-        noCompress += listOf("mytun-core-arm64", "mytun-core-arm", "mytun-core-x86_64")
+    // The Go core ships as libmytuncore.so inside jniLibs: Android grants
+    // execute permission to native libs, while files copied into the app's
+    // private dir are rejected with "execute_no_trans" under SELinux.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+            keepDebugSymbols += "**/libmytuncore.so"
+        }
     }
 }
 

@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 # Build the MyTun Android APK.
 #
-# Cross-compiles the Go core for arm64 + armv7, drops them into assets, then
-# builds and signs the app. Requires the bundled toolchain from the
-# flutter-android-build skill (SDK 35 / build-tools 34 / NDK 26 / JDK 17).
+# The Go core is packaged as jniLibs/<abi>/libmytuncore.so for two reasons:
+#   1. Android only grants execute permission to native libs; a binary copied
+#      into the app's private dir dies with "execute_no_trans" under SELinux.
+#   2. Android is built with GOOS=android + cgo (NDK) so the C library path is
+#      used. The pure-Go SQLite driver issues lstat (syscall 6) on amd64, which
+#      Android's seccomp policy rejects with SIGSYS.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SKILL_SDKS="${MYTUN_ANDROID_SDKS:-/data/dsh/.dsh/skills/flutter-android-build}"
 GOHOME="${MYTUN_GOHOME:-/data/dsh/go-sdk/go}"
 GRADLE_BIN="${MYTUN_GRADLE:-$SKILL_SDKS/gradle-home/wrapper/dists/gradle-8.10.2-bin/e0thjr3we83usdufs66z371ne/gradle-8.10.2/bin/gradle}"
+NDK="${MYTUN_NDK:-$SKILL_SDKS/sdks/android-sdk/ndk/26.3.11579264}"
+TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
 export JAVA_HOME="$SKILL_SDKS/sdks/jdk17"
 export ANDROID_HOME="$SKILL_SDKS/sdks/android-sdk"
@@ -22,15 +27,22 @@ export GOMODCACHE="${GOMODCACHE:-/data/dsh/gopath/pkg/mod}"
 export GOCACHE="${GOCACHE:-/data/dsh/gopath/build-cache}"
 export GRADLE_OPTS="-Xmx2g -Dorg.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m -Dorg.gradle.workers.max=2 -Dorg.gradle.parallel=false -Dorg.gradle.daemon=false"
 
-ASSETS="$ROOT/android/app/src/main/assets"
-mkdir -p "$ASSETS"
+JNI="$ROOT/android/app/src/main/jniLibs"
+mkdir -p "$JNI"/{arm64-v8a,armeabi-v7a,x86_64}
 
-echo "== cross-compiling core for android =="
-pushd "$ROOT" >/dev/null
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -o "$ASSETS/mytun-core-arm64" ./cmd/mytun
-CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -ldflags "-s -w" -o "$ASSETS/mytun-core-arm" ./cmd/mytun
-popd >/dev/null
-ls -lh "$ASSETS"
+echo "== cross-compiling core for android (cgo + NDK) =="
+cd "$ROOT"
+build_one() {
+  local abi="$1" cc="$2" goarch="$3"
+  echo "  -> $abi"
+  CGO_ENABLED=1 GOOS=android GOARCH="$goarch" \
+    CC="$TOOLCHAIN/$cc" CXX="$TOOLCHAIN/$cc++" \
+    go build -ldflags "-s -w" -o "$JNI/$abi/libmytuncore.so" ./cmd/mytun
+}
+build_one arm64-v8a    aarch64-linux-android21-clang          arm64
+build_one armeabi-v7a  armv7a-linux-androideabi21-clang       arm
+build_one x86_64       x86_64-linux-android21-clang           amd64
+ls -lh "$JNI"/*/libmytuncore.so
 
 KEYSTORE="${MYTUN_KEYSTORE:-$ROOT/.keystore/mytun.jks}"
 if [ ! -f "$KEYSTORE" ]; then
@@ -48,12 +60,6 @@ cd "$ROOT/android"
 "$GRADLE_BIN" --no-daemon -I "$SKILL_SDKS/templates/init.gradle" assembleRelease "$@"
 
 APK="$ROOT/android/app/build/outputs/apk/release/app-release.apk"
-if [ -f "$APK" ]; then
-  mkdir -p "$ROOT/dist"
-  cp "$APK" "$ROOT/dist/mytun-android.apk"
-  ls -lh "$ROOT/dist/mytun-android.apk"
-  echo "APK: $ROOT/dist/mytun-android.apk"
-else
-  echo "build finished but APK not found" >&2
-  exit 1
-fi
+mkdir -p "$ROOT/dist"
+cp "$APK" "$ROOT/dist/mytun-android.apk"
+echo "APK: $ROOT/dist/mytun-android.apk"

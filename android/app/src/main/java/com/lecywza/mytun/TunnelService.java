@@ -57,27 +57,11 @@ public class TunnelService extends Service {
 
     private void startCore() {
         try {
-            String abi = Build.SUPPORTED_ABIS.length > 0 ? Build.SUPPORTED_ABIS[0] : "arm64-v8a";
-            String assetName;
-            if (abi.contains("arm64")) {
-                assetName = "mytun-core-arm64";
-            } else if (abi.contains("armeabi") || abi.contains("arm")) {
-                assetName = "mytun-core-arm";
-            } else {
-                assetName = "mytun-core-x86_64";
-            }
-
-            File bin = new File(getFilesDir(), "mytun-core");
-            File versionFile = new File(getFilesDir(), ".core-version");
-            String wantVersion = buildStamp(assetName);
-            boolean needCopy = !bin.exists();
-            if (!needCopy && versionFile.exists()) {
-                String have = readAll(versionFile).trim();
-                needCopy = !have.equals(wantVersion);
-            }
-            if (needCopy) {
-                copyAsset(assetName, bin);
-                writeAll(versionFile, wantVersion);
+            // Android only allows exec on native libs, so the core is packaged
+            // as libmytuncore.so in jniLibs and executed from nativeLibraryDir.
+            File bin = new File(getApplicationInfo().nativeLibraryDir, "libmytuncore.so");
+            if (!bin.exists()) {
+                throw new IOException("core binary missing: " + bin.getAbsolutePath());
             }
             if (!bin.canExecute()) {
                 //noinspection ResultOfMethodCallIgnored

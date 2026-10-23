@@ -100,13 +100,27 @@
 |---|---|---|
 | Windows x64 | ✅ 已验证 | `mytun-windows-amd64.exe` |
 | Linux x64 / arm64 | ✅ 已验证 | `mytun-linux-amd64` / `mytun-linux-arm64` |
-| Android arm64 / armv7 | ✅ 可构建（`dist/mytun-android.apk`） | APK（内置核心 + WebView 控制台 + 前台服务） |
+| Android arm64 / armv7 / x86_64 | ✅ **模拟器实测通过**（`dist/mytun-android.apk`） | APK（内置核心 + WebView 控制台 + 前台服务） |
 | macOS | ⚙️ 可编译未实测 | `mytun-darwin-*` |
 | iOS | ⏳ 未验证（无 Mac 环境） | 可用 GitHub Actions 的 macOS runner 构建 |
 
-Android 端说明：APK 内嵌的是**同一份 Go 静态二进制**（放在 assets，首次启动复制到私有目录并赋可执行位），
-由前台服务拉起，UI 用 WebView 加载本地控制台。因此**不占用系统 VPN 槽位**，可与其它 VPN
-（公司内网、第三方代理）共存。
+Android 端说明：APK 内置 Go 核心（以 `jniLibs/<abi>/libmytuncore.so` 形式打包），由前台服务拉起，
+UI 用 WebView 加载本地控制台。因此**不占用系统 VPN 槽位**，可与其它 VPN（公司内网、第三方代理）共存。
+
+> ⚠️ **Android 上踩到的两个坑（都已修复，APK 里已生效）**
+>
+> 1. **SELinux 拒绝 exec**：把可执行文件放进 app 私有目录再 `ProcessBuilder` 启动会失败，
+>    报 `error=13, Permission denied`，avc 日志为 `denied { execute_no_trans }`。Android 只对
+>    native lib 目录授予执行权限，所以核心必须打包成 `jniLibs/<abi>/libmytuncore.so`，
+>    从 `ApplicationInfo.nativeLibraryDir` 直接 exec。
+> 2. **seccomp 杀掉 SQLite**：用 `GOOS=linux` 编译的 amd64 核心在 Android 上以
+>    `SIGSYS: bad system call` 崩溃，崩在 `syscall 6`（`lstat`）——`modernc.org/libc` 按 GOARCH
+>    硬编码使用 `lstat`，而 Android 的 seccomp 只放行 `newfstatat`。Android 构建改用
+>    `GOOS=android` + cgo（NDK）+ 真 SQLite（`mattn/go-sqlite3`），走 bionic 的 C 库路径。
+
+**Android 模拟器实测（Pixel_8_API36 / x86_64 / WHPX）**：核心成功 exec 并创建 SQLite 库、控制台
+监听 8899、DNS 注入生效（`10.0.2.3`）、WebView 控制台完整渲染并可登录；作为客户端连上远端服务端
+（在服务端状态页可见 `android-1` 在线），服务端再通过隧道反向访问 Android 内部 8899 成功。
 
 ---
 
