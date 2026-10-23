@@ -135,26 +135,54 @@
     </div>
 
     <div class="bt-card p-5">
-      <div class="font-medium mb-3" style="color: var(--bt-text)">{{ t('config.webAuth') }}</div>
-      <div class="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
-        <el-form-item :label="t('login.username')" class="!mb-0">
-          <el-input v-model="pwd.username" />
-        </el-form-item>
-        <el-form-item :label="t('config.oldPassword')" class="!mb-0">
-          <el-input v-model="pwd.oldPassword" type="password" show-password />
-        </el-form-item>
-        <el-form-item :label="t('config.newPassword')" class="!mb-0">
-          <el-input v-model="pwd.newPassword" type="password" show-password />
-        </el-form-item>
-        <el-button type="primary" plain :loading="changing" @click="changePassword">{{ t('config.changePassword') }}</el-button>
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <div class="font-medium" style="color: var(--bt-text)">{{ t('config.transfer') }}</div>
+          <div class="text-xs mt-1" style="color: var(--bt-text-secondary)">{{ t('config.transferHint') }}</div>
+        </div>
+        <div class="flex gap-2 flex-shrink-0">
+          <el-button plain :icon="Download" @click="exportConfig">{{ t('config.export') }}</el-button>
+          <el-button plain :icon="Upload" @click="pickImport">{{ t('config.import') }}</el-button>
+        </div>
+      </div>
+      <input ref="importInput" type="file" accept="application/json" class="hidden" @change="doImport" />
+    </div>
+
+    <div class="bt-card p-5">
+      <div class="flex items-center justify-between">
+        <div>
+          <div class="font-medium" style="color: var(--bt-text)">{{ t('config.webAuth') }}</div>
+          <div class="text-xs mt-1" style="color: var(--bt-text-secondary)">{{ t('config.webAuthHint') }}</div>
+        </div>
+        <el-button plain @click="openPwdDialog">{{ t('config.changePassword') }}</el-button>
       </div>
     </div>
+
+    <el-dialog v-model="pwdOpen" :title="t('config.changePassword')" width="420px">
+      <el-form label-position="top">
+        <el-form-item :label="t('login.username')">
+          <el-input v-model="pwd.username" autocomplete="username" />
+        </el-form-item>
+        <el-form-item :label="t('config.newPassword')">
+          <el-input v-model="pwd.newPassword" type="password" show-password autocomplete="new-password" :placeholder="t('config.pwdHint')" />
+        </el-form-item>
+        <el-form-item :label="t('config.confirmPassword')">
+          <el-input v-model="pwd.confirm" type="password" show-password autocomplete="new-password" />
+        </el-form-item>
+        <div class="text-xs" style="color: var(--bt-text-muted)">{{ t('config.noOldPassword') }}</div>
+      </el-form>
+      <template #footer>
+        <el-button @click="pwdOpen = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="changing" @click="changePassword">{{ t('common.confirm') }}</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { Download, Upload } from '@element-plus/icons-vue'
 import { Delete, Plus } from '@element-plus/icons-vue'
 import { api } from '../api'
 
@@ -166,7 +194,15 @@ const store = useStore()
 const state = store.state
 const saving = ref(false)
 const changing = ref(false)
-const pwd = reactive({ username: state.config.settings?.web_user || 'admin', oldPassword: '', newPassword: '' })
+const pwdOpen = ref(false)
+const pwd = reactive({ username: state.config.settings?.web_user || 'admin', newPassword: '', confirm: '' })
+
+function openPwdDialog() {
+  pwd.username = state.config.settings?.web_user || 'admin'
+  pwd.newPassword = ''
+  pwd.confirm = ''
+  pwdOpen.value = true
+}
 
 const qosSaving = ref(false)
 const qos = reactive({
@@ -302,12 +338,21 @@ function applyImported(cfg) {
 }
 
 async function changePassword() {
+  if (pwd.newPassword && pwd.newPassword.length < 4) {
+    ElMessage.error(t('config.pwdTooShort'))
+    return
+  }
+  if (pwd.newPassword !== pwd.confirm) {
+    ElMessage.error(t('config.pwdMismatch'))
+    return
+  }
   changing.value = true
   try {
-    await api.changePassword(pwd)
-    ElMessage.success(t('config.passwordChanged'))
-    pwd.oldPassword = ''
-    pwd.newPassword = ''
+    // The session is already authenticated, so no old password is required.
+    await api.changePassword({ username: pwd.username, newPassword: pwd.newPassword })
+    if (state.config.settings) state.config.settings.web_user = pwd.username
+    ElMessage.success(t('config.pwdUpdated'))
+    pwdOpen.value = false
   } catch (e) {
     ElMessage.error(e.message)
   } finally {

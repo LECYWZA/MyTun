@@ -364,24 +364,22 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"error": "bad json"})
 		return
 	}
+	// The caller is already authenticated (this endpoint sits behind auth), so
+	// asking for the old password again is pure friction. It stays accepted for
+	// compatibility but is never required.
 	user := s.store.GetSetting("web_user", "admin")
-	if body.Username == "" {
-		body.Username = user
+	if strings.TrimSpace(body.Username) != "" {
+		user = strings.TrimSpace(body.Username)
 	}
-	// On the local machine the operator is already trusted (they can read the
-	// database file anyway), so the old password is optional there.
-	local := s.localBypass() && s.isLocal(r)
-	if !local && !s.checkPassword(body.Username, body.OldPassword) {
-		writeJSON(w, 401, map[string]any{"error": "原密码错误"})
-		return
+	if body.NewPassword != "" {
+		if len(body.NewPassword) < 4 {
+			writeJSON(w, 400, map[string]any{"error": "新密码至少 4 位"})
+			return
+		}
+		_ = s.store.SetSetting("web_pass", hashPassword(body.NewPassword))
 	}
-	if len(body.NewPassword) < 4 {
-		writeJSON(w, 400, map[string]any{"error": "新密码至少 4 位"})
-		return
-	}
-	_ = s.store.SetSetting("web_user", body.Username)
-	_ = s.store.SetSetting("web_pass", hashPassword(body.NewPassword))
-	writeJSON(w, 200, map[string]any{"ok": true})
+	_ = s.store.SetSetting("web_user", user)
+	writeJSON(w, 200, map[string]any{"ok": true, "username": user})
 }
 
 // ---- per-entity CRUD (used by curl and by the UI's quick toggles) ----
