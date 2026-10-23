@@ -41,7 +41,7 @@ type Server struct {
 	// OnSession is called after a client authenticates.
 	OnSession func(*mux.Session)
 	// OnSessionClosed is called when an authenticated client disconnects.
-	OnSessionClosed func(clientID string)
+	OnSessionClosed func(sess *mux.Session)
 	// OnChannel handles inbound channels (forwards, messages, files).
 	OnChannel func(*mux.Session, *mux.Channel)
 
@@ -205,7 +205,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			delete(s.sessions, closed.ClientID)
 			s.mu.Unlock()
 			if s.OnSessionClosed != nil {
-				s.OnSessionClosed(closed.ClientID)
+				s.OnSessionClosed(closed)
 			}
 			return
 		}

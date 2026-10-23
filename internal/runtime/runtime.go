@@ -231,13 +231,18 @@ func (rt *Runtime) Apply() error {
 			rt.mu.Unlock()
 			log.Printf("[tunnel] client %q authenticated from %s", s.ClientID, s.RemoteAddr)
 		}
-		srv.OnSessionClosed = func(clientID string) {
+		srv.OnSessionClosed = func(closed *mux.Session) {
 			// Called from the session goroutine while a caller may hold rt.mu, so
 			// never block the callback path synchronously.
 			go func() {
 				rt.mu.Lock()
-				if cur, ok := rt.sessions[clientID]; ok && !cur.IsAuthed() {
-					delete(rt.sessions, clientID)
+				// Identity check: remove this exact session, but keep a newer one
+				// that replaced it under the same client id. The previous version
+				// only dropped sessions that never authenticated, so a client that
+				// connected and then went away stayed "online" forever.
+				if cur, ok := rt.sessions[closed.ClientID]; ok && cur == closed {
+					delete(rt.sessions, closed.ClientID)
+					log.Printf("[tunnel] client %q disconnected", closed.ClientID)
 				}
 				rt.mu.Unlock()
 			}()
