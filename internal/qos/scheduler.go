@@ -134,6 +134,11 @@ type Scheduler struct {
 
 	capBps   float64
 	obsBps   float64
+	// peakBps is the best sustained rate seen recently. Auto mode divides this
+	// when streams compete, and it decays only slowly so a burst of real traffic
+	// keeps the estimate usable instead of collapsing to the floor.
+	peakBps   float64
+	peakAt    time.Time
 	lastTick time.Time
 
 	stopCh   chan struct{}
@@ -465,7 +470,16 @@ func (s *Scheduler) tick() {
 		if cfg.Mode == ModeFixed && cfg.TotalKbps > 0 {
 			s.capBps = float64(cfg.TotalKbps) * 1000 / 8
 		} else {
-			s.capBps *= 0.995
+			// Idle: let the estimate relax slowly. Decaying fast (the old
+			// 0.995/tick) collapsed it within seconds and then capped the next
+			// transfer at an absurdly low number.
+			if time.Since(s.peakAt) > 5*time.Minute {
+				s.peakBps *= 0.9995
+			}
+			s.capBps = s.peakBps
+			if s.capBps < 256*1024 {
+				s.capBps = 256 * 1024
+			}
 		}
 		s.mu.Unlock()
 		return
@@ -475,16 +489,41 @@ func (s *Scheduler) tick() {
 	interactive := make([]*stream, 0, len(streams))
 	bulk := make([]*stream, 0, len(streams))
 
+	// Probing signal: if any stream is currently held back by a ceiling, it is
+	// worth testing whether the link can do more.
+	throttledAny := false
+	for _, st := range streams {
+		st.mu.Lock()
+		if st.limitBps > 0 {
+			throttledAny = true
+		}
+		st.mu.Unlock()
+		if throttledAny {
+			break
+		}
+	}
+
 	// Capacity first: classification compares a stream's rate against it.
 	s.mu.Lock()
 	if cfg.Mode == ModeFixed && cfg.TotalKbps > 0 {
 		s.capBps = float64(cfg.TotalKbps) * 1000 / 8
 	} else {
-		if totalObs := s.obsBps; totalObs > s.capBps {
-			s.capBps = totalObs
-		} else {
-			s.capBps *= 0.995
+		// Learn from the best rate we have actually carried; probe upwards while
+		// every stream is being held back so the estimate can follow a link that
+		// got faster.
+		if totalObs := s.obsBps; totalObs > s.peakBps {
+			s.peakBps = totalObs
+			s.peakAt = time.Now()
 		}
+		if throttledAny && s.peakBps > 0 {
+			// Probe upwards quickly: 2%/tick took over a minute to climb from a
+			// stale low estimate to a fast link, which felt like "auto is slow".
+			s.peakBps *= 1.15
+		}
+		if time.Since(s.peakAt) > 5*time.Minute {
+			s.peakBps *= 0.9995
+		}
+		s.capBps = s.peakBps
 		if cfg.TotalKbps > 0 {
 			if maxBps := float64(cfg.TotalKbps) * 1000 / 8; s.capBps > maxBps {
 				s.capBps = maxBps
@@ -571,7 +610,10 @@ func (s *Scheduler) tick() {
 	capBps := s.capBps
 	s.mu.Unlock()
 
-	if !cfg.Enabled {
+	if !cfg.Enabled || (len(streams) == 1 && cfg.Mode != ModeFixed) {
+		// Auto mode with no contention: let TCP decide the real rate. Capping a
+		// single stream at an *estimated* capacity is what made "auto" feel slow.
+		// An explicit fixed cap is the user's instruction, so it always applies.
 		for _, st := range streams {
 			st.mu.Lock()
 			st.limitBps = 0
