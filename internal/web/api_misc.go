@@ -302,7 +302,9 @@ func (s *Server) handleFileSend(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"ok": false, "error": "隧道未连接"})
 		return
 	}
-	tmp := filepath.Join(s.chat.ReceiveDir(), ".upload_"+hdr.Filename)
+	// Unique per request: two people (or two tabs) uploading the same file name
+	// would otherwise clobber each other's temp file mid-stream.
+	tmp := filepath.Join(s.chat.ReceiveDir(), "."+strconv.FormatInt(time.Now().UnixNano(), 36)+"_"+filepath.Base(hdr.Filename))
 	f, err := os.Create(tmp)
 	if err != nil {
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
