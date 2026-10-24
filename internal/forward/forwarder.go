@@ -88,6 +88,7 @@ func (f *Forwarder) Apply(rules []Rule) map[int]string {
 	defer f.mu.Unlock()
 
 	want := map[int]Rule{}
+	dupes := map[int]string{}
 	for _, r := range rules {
 		if r.Role != "" && r.Role != f.role {
 			continue
@@ -95,10 +96,19 @@ func (f *Forwarder) Apply(rules []Rule) map[int]string {
 		if !r.Enabled || r.ListenPort <= 0 {
 			continue
 		}
+		if _, clash := want[r.ListenPort]; clash {
+			// Two rules on one port: keep the first and surface the clash
+			// instead of silently dropping one of them.
+			dupes[r.ListenPort] = fmt.Sprintf("port %d is used by more than one forward rule", r.ListenPort)
+			continue
+		}
 		want[r.ListenPort] = r
 	}
 
 	errs := map[int]string{}
+	for port, msg := range dupes {
+		errs[port] = msg
+	}
 	for port, l := range f.listeners {
 		if _, ok := want[port]; !ok {
 			l.closed.Store(true)

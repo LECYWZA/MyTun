@@ -104,12 +104,18 @@ func (s *Server) Stop() error {
 	if s.ln != nil {
 		_ = s.ln.Close()
 	}
+	// Collect under the lock, close outside it: Close fires OnClose, which takes
+	// this same mutex (sync.Mutex is not reentrant).
 	s.mu.Lock()
+	pending := make([]*mux.Session, 0, len(s.sessions))
 	for id, sess := range s.sessions {
-		_ = sess.Close()
+		pending = append(pending, sess)
 		delete(s.sessions, id)
 	}
 	s.mu.Unlock()
+	for _, sess := range pending {
+		_ = sess.Close()
+	}
 	return nil
 }
 
@@ -185,13 +191,17 @@ func (s *Server) handleConn(conn net.Conn) {
 				}
 			}
 		}
+		// Close the replaced session only AFTER releasing the lock: Close runs
+		// OnClose, which takes this same mutex, and sync.Mutex is not reentrant.
+		// Holding it here deadlocked the server whenever a client reconnected
+		// under the same client id (the console then hung on Server.Stats).
 		s.mu.Lock()
-		if old, ok := s.sessions[clientID]; ok && old != nil {
-			// Replace a stale session from the same client id.
-			_ = old.Close()
-		}
+		old := s.sessions[clientID]
 		s.sessions[clientID] = sess
 		s.mu.Unlock()
+		if old != nil && old != sess {
+			_ = old.Close()
+		}
 		sess.ClientID = clientID
 		go sess.KeepAlive(25 * time.Second)
 		if s.OnSession != nil {

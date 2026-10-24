@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -175,6 +176,31 @@ func (s *Server) keepProxySecret(row *store.ProxyRow) {
 func (s *Server) saveConfig(p *ConfigPayload) error {
 	// Replace semantics: rows absent from the payload are deleted.
 	keepS := map[string]bool{}
+	// Reject duplicate listen ports early: the runtime would keep only one of
+	// them and the operator would be left wondering why a rule does nothing.
+	seenF := map[string]string{}
+	for _, r := range p.Forwards {
+		if !r.Enabled {
+			continue
+		}
+		key := r.Role + ":" + strconv.Itoa(r.ListenPort)
+		if prev, ok := seenF[key]; ok && r.ListenPort > 0 {
+			return fmt.Errorf("端口 %d 被多条映射占用（%s 与 %s），请改成不同端口", r.ListenPort, prev, r.Note+"/"+r.ID)
+		}
+		seenF[key] = r.Note + "/" + r.ID
+	}
+	seenP := map[string]string{}
+	for _, r := range p.Proxies {
+		if !r.Enabled {
+			continue
+		}
+		key := r.Role + ":" + strconv.Itoa(r.ListenPort)
+		if prev, ok := seenP[key]; ok && r.ListenPort > 0 {
+			return fmt.Errorf("端口 %d 被多个代理占用（%s 与 %s），请改成不同端口", r.ListenPort, prev, r.Note+"/"+r.ID)
+		}
+		seenP[key] = r.Note + "/" + r.ID
+	}
+
 	for _, r := range p.Servers {
 		keepS[r.ID] = true
 		s.keepServerSecret(&r)

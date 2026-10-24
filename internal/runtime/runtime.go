@@ -105,6 +105,10 @@ func (rt *Runtime) resolveSession(clientID string) *mux.Session {
 		if s, ok := rt.sessions[clientID]; ok {
 			return s
 		}
+		// An explicitly requested peer that is not connected must fail loudly:
+		// falling through to "some other session" would silently send traffic to
+		// the wrong machine while the operator thinks it goes to the named one.
+		return nil
 	}
 	if len(rt.sessions) == 1 {
 		for _, s := range rt.sessions {

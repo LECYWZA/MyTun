@@ -94,6 +94,7 @@ func (p *Proxy) Apply(rules []Rule) map[int]string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	want := map[int]Rule{}
+	dupes := map[int]string{}
 	for _, r := range rules {
 		if r.Role != "" && r.Role != p.role {
 			continue
@@ -101,9 +102,16 @@ func (p *Proxy) Apply(rules []Rule) map[int]string {
 		if !r.Enabled || r.ListenPort <= 0 {
 			continue
 		}
+				if _, clash := want[r.ListenPort]; clash {
+			dupes[r.ListenPort] = fmt.Sprintf("port %d is used by more than one proxy rule", r.ListenPort)
+			continue
+		}
 		want[r.ListenPort] = r
 	}
 	errs := map[int]string{}
+	for port, msg := range dupes {
+		errs[port] = msg
+	}
 	for port, l := range p.listeners {
 		if _, ok := want[port]; !ok {
 			l.closed.Store(true)
