@@ -1189,3 +1189,20 @@ html.dark .el-table {
     display: block;
   }
 }
+
+/* Parameter rows: fixed field widths beat a grid here — a grid squeezes the
+   longer fields (host / SNI) down to a couple of characters. */
+.bt-param-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+}
+.bt-param-row .el-form-item {
+  margin-bottom: 0;
+}
+@media (max-width: 1023px) {
+  .bt-param-row > .el-form-item {
+    width: 100% !important;
+  }
+}

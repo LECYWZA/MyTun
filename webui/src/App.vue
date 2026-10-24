@@ -120,7 +120,12 @@ onMounted(async () => {
     // gets the user straight in without a password prompt.
     try { await api.refresh() } catch { /* no session yet */ }
     await store.bootstrap()
-    if (state.authenticated) router.push('/overview')
+    // Restore the page the user was on: pushing /overview unconditionally sent
+    // every refresh back to the home screen.
+    const cur = router.currentRoute.value
+    if (state.authenticated && (cur.path === '/' || cur.path === '' || cur.meta?.public)) {
+      await router.replace('/overview')
+    }
   } catch {
     state.authenticated = false
   } finally {

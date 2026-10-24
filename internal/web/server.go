@@ -44,6 +44,10 @@ const (
 	refreshCookie = "mytun_rt"
 )
 
+// DefaultConsolePassword is seeded on first run so the console is usable without
+// a setup step. Users can change it from the console at any time.
+const DefaultConsolePassword = "ewq@123456"
+
 // Server is the HTTP console.
 type Server struct {
 	store *store.Store
@@ -96,7 +100,7 @@ func New(o Options) (*Server, error) {
 	s.secret = []byte(secret)
 	if o.Store.GetSetting("web_user", "") == "" {
 		_ = o.Store.SetSetting("web_user", "admin")
-		_ = o.Store.SetSetting("web_pass", hashPassword("password"))
+		_ = o.Store.SetSetting("web_pass", hashPassword(DefaultConsolePassword))
 	}
 	label := "服务端"
 	if o.Store.GetSetting("mode", "server") == "client" {
@@ -288,12 +292,18 @@ func (s *Server) spaHandler(sub fs.FS) http.Handler {
 				http.NotFound(w, r)
 				return
 			}
+			// The shell must be revalidated on every load: otherwise an upgrade
+			// keeps serving a cached index.html that points at the previous
+			// hashed bundle, and users never see the new UI.
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 			_, _ = w.Write(data)
 			return
 		}
 		if strings.HasPrefix(path, "assets/") {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else if strings.HasSuffix(path, ".html") || path == "" {
+			w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 		}
 		fileServer.ServeHTTP(w, r)
 	})
@@ -438,7 +448,7 @@ func (s *Server) checkPassword(user, pass string) bool {
 	wantUser := s.store.GetSetting("web_user", "admin")
 	wantPass := s.store.GetSetting("web_pass", "")
 	if wantPass == "" {
-		wantPass = hashPassword("password")
+		wantPass = hashPassword(DefaultConsolePassword)
 	}
 	if subtle.ConstantTimeCompare([]byte(user), []byte(wantUser)) != 1 {
 		return false

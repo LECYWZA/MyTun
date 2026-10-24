@@ -21,21 +21,21 @@
         <el-button size="small" plain :icon="Plus" @click="addServer">{{ t('config.addServer') }}</el-button>
       </div>
       <div v-for="(s, idx) in state.config.servers" :key="s.id" class="rounded-xl p-4 mb-3" style="border: 1px solid var(--bt-border)">
-        <div class="grid grid-cols-1 md:grid-cols-6 gap-3">
+        <div class="bt-param-row">
           <el-form-item :label="t('common.name')" class="!mb-0">
-            <el-input v-model="s.alias" @input="store.markDirty()" />
+            <el-input v-model="s.alias" style="width: 150px" @input="store.markDirty()" />
           </el-form-item>
           <el-form-item :label="t('config.bindHost')" class="!mb-0">
-            <el-input v-model="s.bindHost" @input="store.markDirty()" />
+            <el-input v-model="s.bindHost" style="width: 160px" @input="store.markDirty()" />
           </el-form-item>
           <el-form-item :label="t('config.tunnelPort')" class="!mb-0">
-            <el-input-number v-model="s.port" :min="1" :max="65535" controls-position="right" class="!w-full" @change="store.markDirty()" />
+            <el-input-number v-model="s.port" style="width: 130px" :min="1" :max="65535" controls-position="right" class="!w-full" @change="store.markDirty()" />
           </el-form-item>
           <el-form-item :label="t('common.password')" class="!mb-0">
-            <el-input v-model="s.password" show-password @focus="reveal(s, 'server')" @input="store.markDirty()" />
+            <el-input v-model="s.password" style="width: 170px" show-password @focus="reveal(s, 'server')" @input="store.markDirty()" />
           </el-form-item>
           <el-form-item :label="t('config.commonName')" class="!mb-0">
-            <el-input v-model="s.commonName" @input="store.markDirty()" />
+            <el-input v-model="s.commonName" style="width: 190px" placeholder="mail.qq.com" @input="store.markDirty()" />
           </el-form-item>
           <div class="flex items-end gap-2">
             <el-switch v-model="s.enabled" @change="store.markDirty()" />
@@ -52,21 +52,24 @@
         <el-button size="small" plain :icon="Plus" @click="addClient">{{ t('config.addClient') }}</el-button>
       </div>
       <div v-for="(c, idx) in state.config.clients" :key="c.id" class="rounded-xl p-4 mb-3" style="border: 1px solid var(--bt-border)">
-        <div class="grid grid-cols-1 md:grid-cols-6 gap-3">
+        <div class="bt-param-row">
           <el-form-item :label="t('common.name')" class="!mb-0">
-            <el-input v-model="c.alias" @input="store.markDirty()" />
+            <el-input v-model="c.alias" style="width: 150px" @input="store.markDirty()" />
           </el-form-item>
           <el-form-item :label="t('config.upstreamHost')" class="!mb-0">
-            <el-input v-model="c.host" @input="store.markDirty()" />
+            <el-input v-model="c.host" style="width: 200px" placeholder="example.com" @input="store.markDirty()" />
           </el-form-item>
           <el-form-item :label="t('config.tunnelPort')" class="!mb-0">
-            <el-input-number v-model="c.port" :min="1" :max="65535" controls-position="right" class="!w-full" @change="store.markDirty()" />
+            <el-input-number v-model="c.port" style="width: 130px" :min="1" :max="65535" controls-position="right" class="!w-full" @change="store.markDirty()" />
           </el-form-item>
           <el-form-item :label="t('common.password')" class="!mb-0">
-            <el-input v-model="c.password" show-password @focus="reveal(c, 'client')" @input="store.markDirty()" />
+            <el-input v-model="c.password" style="width: 170px" show-password @focus="reveal(c, 'client')" @input="store.markDirty()" />
           </el-form-item>
           <el-form-item :label="t('config.clientId')" class="!mb-0">
-            <el-input v-model="c.clientId" @input="store.markDirty()" />
+            <el-input v-model="c.clientId" style="width: 140px" @input="store.markDirty()" />
+          </el-form-item>
+          <el-form-item :label="t('config.commonName')" class="!mb-0">
+            <el-input v-model="c.sni" style="width: 190px" placeholder="mail.qq.com" @input="store.markDirty()" />
           </el-form-item>
           <div class="flex items-end gap-2">
             <el-switch v-model="c.enabled" @change="store.markDirty()" />
