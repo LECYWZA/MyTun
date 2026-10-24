@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"fmt"
 	"encoding/json"
 	"net/http"
@@ -109,7 +110,12 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.saveConfig(&payload); err != nil {
-			writeJSON(w, 500, map[string]any{"error": err.Error()})
+			code := http.StatusInternalServerError
+			var bad invalidConfig
+			if errors.As(err, &bad) {
+				code = http.StatusBadRequest
+			}
+			writeJSON(w, code, map[string]any{"error": err.Error()})
 			return
 		}
 		if err := s.rt.Apply(); err != nil {
@@ -173,9 +179,47 @@ func (s *Server) keepProxySecret(row *store.ProxyRow) {
 	row.Pass = ""
 }
 
+// invalidConfig marks errors caused by bad input (400) as opposed to storage
+// failures (500).
+type invalidConfig struct{ msg string }
+
+func (e invalidConfig) Error() string { return e.msg }
+
+func invalidf(format string, args ...any) error {
+	return invalidConfig{msg: fmt.Sprintf(format, args...)}
+}
+
 func (s *Server) saveConfig(p *ConfigPayload) error {
 	// Replace semantics: rows absent from the payload are deleted.
 	keepS := map[string]bool{}
+	// Same idea for tunnel servers: two enabled servers cannot share a port.
+	seenS := map[int]string{}
+	for _, r := range p.Servers {
+		if !r.Enabled || r.Port <= 0 {
+			continue
+		}
+		if prev, ok := seenS[r.Port]; ok {
+			return invalidf("隧道端口 %d 被多个服务端占用（%s 与 %s）", r.Port, prev, r.Alias)
+		}
+		seenS[r.Port] = r.Alias
+	}
+	// Two outbound clients sharing one client id would keep kicking each other
+	// off the same server session.
+	// Same client id towards the same server would fight over one session; the
+	// same id against a different server is perfectly fine.
+	seenC := map[string]string{}
+	for _, r := range p.Clients {
+		if !r.Enabled || r.ClientID == "" {
+			continue
+		}
+		key := r.Host + ":" + strconv.Itoa(r.Port) + "/" + r.ClientID
+		if prev, ok := seenC[key]; ok {
+			return invalidf("%s:%d 上的客户端标识 %q 重复（%s 与 %s），同标识会互相顶掉连接",
+				r.Host, r.Port, r.ClientID, prev, r.Alias)
+		}
+		seenC[key] = r.Alias
+	}
+
 	// Reject duplicate listen ports early: the runtime would keep only one of
 	// them and the operator would be left wondering why a rule does nothing.
 	seenF := map[string]string{}
@@ -185,7 +229,7 @@ func (s *Server) saveConfig(p *ConfigPayload) error {
 		}
 		key := r.Role + ":" + strconv.Itoa(r.ListenPort)
 		if prev, ok := seenF[key]; ok && r.ListenPort > 0 {
-			return fmt.Errorf("端口 %d 被多条映射占用（%s 与 %s），请改成不同端口", r.ListenPort, prev, r.Note+"/"+r.ID)
+			return invalidf("端口 %d 被多条映射占用（%s 与 %s），请改成不同端口", r.ListenPort, prev, r.Note+"/"+r.ID)
 		}
 		seenF[key] = r.Note + "/" + r.ID
 	}
@@ -196,7 +240,7 @@ func (s *Server) saveConfig(p *ConfigPayload) error {
 		}
 		key := r.Role + ":" + strconv.Itoa(r.ListenPort)
 		if prev, ok := seenP[key]; ok && r.ListenPort > 0 {
-			return fmt.Errorf("端口 %d 被多个代理占用（%s 与 %s），请改成不同端口", r.ListenPort, prev, r.Note+"/"+r.ID)
+			return invalidf("端口 %d 被多个代理占用（%s 与 %s），请改成不同端口", r.ListenPort, prev, r.Note+"/"+r.ID)
 		}
 		seenP[key] = r.Note + "/" + r.ID
 	}

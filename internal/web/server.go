@@ -264,6 +264,12 @@ func (s *Server) spaHandler(sub fs.FS) http.Handler {
 			path = "index.html"
 		}
 		if _, err := fs.Stat(sub, path); err != nil {
+			// Never answer an API call with the SPA HTML: a script expecting
+			// JSON would choke on "<!doctype html>".
+			if strings.HasPrefix(path, "api/") {
+				writeJSON(w, http.StatusNotFound, map[string]any{"error": "unknown endpoint: /" + path})
+				return
+			}
 			// SPA fallback
 			r.URL.Path = "/"
 			r2 := r.Clone(r.Context())
@@ -501,10 +507,23 @@ func (g *loginGuard) reset(ip string) {
 }
 
 func clientIP(r *http.Request) string {
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
 	}
-	return r.RemoteAddr
+	// Behind a local reverse proxy every request looks like 127.0.0.1; without
+	// this the whole world would share one login-attempt bucket.
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if first, _, _ := strings.Cut(xff, ","); strings.TrimSpace(first) != "" {
+				return strings.TrimSpace(first)
+			}
+		}
+		if xr := strings.TrimSpace(r.Header.Get("X-Real-IP")); xr != "" {
+			return xr
+		}
+	}
+	return host
 }
 
 // handleRefresh exchanges a valid refresh cookie for a fresh access token, so

@@ -123,6 +123,11 @@ func csvSafe(v string) string {
 	if v == "" {
 		return ""
 	}
+	// A leading = + - @ (or tab/CR) makes Excel and Sheets treat the cell as a
+	// formula. Prefix with an apostrophe so audit text stays text.
+	if strings.ContainsRune("=+-@\t\r", rune(v[0])) {
+		v = "'" + v
+	}
 	if strings.ContainsAny(v, ",\"\n\r") {
 		return `"` + strings.ReplaceAll(v, `"`, `""`) + `"`
 	}

@@ -393,8 +393,12 @@ type AuditQuery struct {
 
 // Audit returns recent audit rows matching the query.
 func (s *Store) Audit(q AuditQuery) ([]AuditRow, error) {
-	if q.Limit <= 0 || q.Limit > 1000 {
+	if q.Limit <= 0 {
 		q.Limit = 200
+	}
+	// Allow large pulls for CSV export; the UI simply asks for smaller pages.
+	if q.Limit > 200000 {
+		q.Limit = 200000
 	}
 	var where []string
 	var args []any
