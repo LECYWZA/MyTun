@@ -227,6 +227,9 @@ func (s *Server) saveConfig(p *ConfigPayload) error {
 		if !r.Enabled {
 			continue
 		}
+		if r.ListenPort > 65535 || r.TargetPort > 65535 {
+			return invalidf("端口 %d → %d 超出范围（1-65535）", r.ListenPort, r.TargetPort)
+		}
 		key := r.Role + ":" + strconv.Itoa(r.ListenPort)
 		if prev, ok := seenF[key]; ok && r.ListenPort > 0 {
 			return invalidf("端口 %d 被多条映射占用（%s 与 %s），请改成不同端口", r.ListenPort, prev, r.Note+"/"+r.ID)
@@ -363,10 +366,28 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, s.store.AllSettings())
 		return
 	}
-	var body map[string]string
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	// Accept any JSON scalar: an API client that sends {"audit_max_rows": 5000}
+	// should work just like the UI that sends it as a string.
+	var raw map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		writeJSON(w, 400, map[string]any{"error": "bad json"})
 		return
+	}
+	body := make(map[string]string, len(raw))
+	for k, v := range raw {
+		switch t := v.(type) {
+		case string:
+			body[k] = t
+		case float64:
+			body[k] = strconv.FormatFloat(t, 'f', -1, 64)
+		case bool:
+			body[k] = strconv.FormatBool(t)
+		case nil:
+			body[k] = ""
+		default:
+			writeJSON(w, 400, map[string]any{"error": "setting " + k + " must be a scalar value"})
+			return
+		}
 	}
 	for k, v := range body {
 		if k == "web_pass" || k == "jwt_secret" {

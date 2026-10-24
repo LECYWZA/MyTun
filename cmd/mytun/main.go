@@ -110,7 +110,17 @@ func main() {
 	dbPath := filepath.Join(dataDir, "mytun.db")
 	st, err := store.Open(dbPath)
 	if err != nil {
-		log.Fatalf("打开数据库失败: %v", err)
+		// A corrupt database used to abort start-up entirely. Move it aside so
+		// the service still comes up (config and audit history are lost, but
+		// nothing is destroyed) and say loudly where the old file went.
+		aside := fmt.Sprintf("%s.corrupt-%s", dbPath, time.Now().Format("20060102-150405"))
+		if mvErr := os.Rename(dbPath, aside); mvErr == nil {
+			log.Printf("数据库无法打开（%v），已备份为 %s，将新建空库启动", err, aside)
+			st, err = store.Open(dbPath)
+		}
+		if err != nil {
+			log.Fatalf("打开数据库失败: %v", err)
+		}
 	}
 	defer st.Close()
 

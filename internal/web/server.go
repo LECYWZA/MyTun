@@ -57,6 +57,8 @@ type Server struct {
 	wsMu    sync.Mutex
 	wsConns map[*wsClient]struct{}
 	tickets map[string]time.Time
+	revMu   sync.Mutex
+	revokedTokens map[string]int64
 
 	srv     *http.Server
 	ln      net.Listener
@@ -80,6 +82,7 @@ func New(o Options) (*Server, error) {
 		log:     o.Log,
 		wsConns: map[*wsClient]struct{}{},
 		tickets: map[string]time.Time{},
+		revokedTokens: map[string]int64{},
 		login:   newLoginGuard(10, time.Minute, 60*time.Second),
 		dataDir: o.DataDir,
 	}
@@ -270,6 +273,12 @@ func (s *Server) spaHandler(sub fs.FS) http.Handler {
 				writeJSON(w, http.StatusNotFound, map[string]any{"error": "unknown endpoint: /" + path})
 				return
 			}
+			// A missing asset must not fall back to index.html: the browser
+			// would try to parse HTML as JavaScript/CSS.
+			if strings.HasPrefix(path, "assets/") || strings.HasSuffix(path, ".js") || strings.HasSuffix(path, ".css") {
+				http.NotFound(w, r)
+				return
+			}
 			// SPA fallback
 			r.URL.Path = "/"
 			r2 := r.Clone(r.Context())
@@ -294,38 +303,93 @@ func (s *Server) spaHandler(sub fs.FS) http.Handler {
 
 func (s *Server) token(user string, expires time.Time) string {
 	mac := hmac.New(sha256.New, s.secret)
-	payload := fmt.Sprintf("%s|%d", user, expires.Unix())
+	jti := make([]byte, 8)
+	_, _ = rand.Read(jti)
+	payload := fmt.Sprintf("%s|%d|%s", user, expires.Unix(), hex.EncodeToString(jti))
 	mac.Write([]byte(payload))
 	return base64.RawURLEncoding.EncodeToString([]byte(payload)) + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
+// verifyTokenOK reports whether a token is valid for authentication.
+func (s *Server) verifyTokenOK(tok string) bool {
+	_, _, _, ok := s.verifyTokenInfo(tok)
+	return ok
+}
+
+// verifyToken validates the signature and expiry and returns the subject.
 func (s *Server) verifyToken(tok string) (string, bool) {
+	user, _, _, ok := s.verifyTokenInfo(tok)
+	return user, ok
+}
+
+// verifyTokenInfo returns the subject, the token id and the expiry.
+func (s *Server) verifyTokenInfo(tok string) (user, jti string, exp int64, ok bool) {
 	parts := strings.SplitN(tok, ".", 2)
 	if len(parts) != 2 {
-		return "", false
+		return "", "", 0, false
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return "", false
+		return "", "", 0, false
 	}
 	sig, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", false
+		return "", "", 0, false
 	}
 	mac := hmac.New(sha256.New, s.secret)
 	mac.Write(payload)
 	if !hmac.Equal(sig, mac.Sum(nil)) {
-		return "", false
+		return "", "", 0, false
 	}
-	bits := strings.SplitN(string(payload), "|", 2)
-	if len(bits) != 2 {
-		return "", false
+	bits := strings.SplitN(string(payload), "|", 3)
+	if len(bits) < 2 {
+		return "", "", 0, false
 	}
-	exp, err := strconv.ParseInt(bits[1], 10, 64)
-	if err != nil || time.Now().Unix() > exp {
-		return "", false
+	parsedExp, err := strconv.ParseInt(bits[1], 10, 64)
+	if err != nil || time.Now().Unix() > parsedExp {
+		return "", "", 0, false
 	}
-	return bits[0], true
+	if len(bits) == 3 {
+		jti = bits[2]
+	}
+	if jti != "" && s.revoked(jti) {
+		return "", "", 0, false
+	}
+	return bits[0], jti, parsedExp, true
+}
+
+// revoked reports whether the token id was logged out before its expiry.
+func (s *Server) revoked(jti string) bool {
+	s.revMu.Lock()
+	defer s.revMu.Unlock()
+	exp, ok := s.revokedTokens[jti]
+	if !ok {
+		return false
+	}
+	if time.Now().Unix() > exp {
+		delete(s.revokedTokens, jti)
+		return false
+	}
+	return true
+}
+
+// revoke marks a token id dead until it would have expired anyway.
+func (s *Server) revoke(jti string, exp int64) {
+	if jti == "" {
+		return
+	}
+	s.revMu.Lock()
+	s.revokedTokens[jti] = exp
+	// keep the map from growing forever
+	if len(s.revokedTokens) > 4096 {
+		now := time.Now().Unix()
+		for k, v := range s.revokedTokens {
+			if now > v {
+				delete(s.revokedTokens, k)
+			}
+		}
+	}
+	s.revMu.Unlock()
 }
 
 // isLocal reports whether the request comes from the same machine.
@@ -563,6 +627,23 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	// Stateless tokens stay valid until they expire, so logout has to revoke
+	// the presented ids explicitly; otherwise a copied token outlives the
+	// session for up to an hour.
+	presented := []string{}
+	if h := r.Header.Get("Authorization"); h != "" {
+		presented = append(presented, strings.TrimPrefix(h, "Bearer "))
+	}
+	for _, n := range []string{accessCookie, refreshCookie, "mytun_token"} {
+		if c, err := r.Cookie(n); err == nil {
+			presented = append(presented, c.Value)
+		}
+	}
+	for _, tok := range presented {
+		if _, jti, exp, ok := s.verifyTokenInfo(tok); ok {
+			s.revoke(jti, exp)
+		}
+	}
 	for _, n := range []string{accessCookie, refreshCookie, "mytun_token"} {
 		http.SetCookie(w, &http.Cookie{Name: n, Value: "", Path: "/", MaxAge: -1})
 	}
@@ -793,11 +874,6 @@ func (s *Server) consumeTicket(t string) bool {
 	}
 	delete(s.tickets, t) // single use
 	return time.Now().Before(exp)
-}
-
-func (s *Server) verifyTokenOK(tok string) bool {
-	_, ok := s.verifyToken(tok)
-	return ok
 }
 
 func (s *Server) handleInterfaces(w http.ResponseWriter, r *http.Request) {

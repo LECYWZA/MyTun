@@ -245,7 +245,12 @@ func (c *ClientConn) dialAndServe() error {
 			return fmt.Errorf("认证失败：%s（请检查两端密码是否一致）", reason)
 		}
 	case err := <-runErr:
-		return fmt.Errorf("session ended during auth: %w", err)
+		// The tunnel is encrypted with a key derived from the password, so a
+		// mismatch shows up as a frame that cannot be decrypted (EOF/reset)
+		// long before any auth reply could be parsed. Say so instead of
+		// surfacing a bare "EOF".
+		_ = sess.Close()
+		return fmt.Errorf("认证失败：%w（多半是两端隧道密码不一致，或对端不是 MyTun 服务端）", err)
 	case <-time.After(15 * time.Second):
 		_ = sess.Close()
 		return errors.New("authentication timeout")
