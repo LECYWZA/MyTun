@@ -18,7 +18,6 @@ import (
 	"github.com/LECYWZA/mytun/internal/logging"
 	"github.com/LECYWZA/mytun/internal/mux"
 	"github.com/LECYWZA/mytun/internal/store"
-	"github.com/LECYWZA/mytun/internal/sysproxy"
 )
 
 func (s *Server) handleTrafficLogs(w http.ResponseWriter, r *http.Request) {
@@ -147,56 +146,6 @@ func (s *Server) handleTrafficSeries(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"minutes": minutes, "buckets": series})
 }
 
-func (s *Server) handleSystemProxy(w http.ResponseWriter, r *http.Request) {
-	action := strings.TrimPrefix(r.URL.Path, "/api/system-proxy/")
-	var body struct {
-		Host string `json:"host"`
-		Port int    `json:"port"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	switch action {
-	case "enable":
-		if body.Host == "" {
-			body.Host = "127.0.0.1"
-		}
-		if body.Port == 0 {
-			rows, _ := s.store.Proxies()
-			for _, p := range rows {
-				if p.Enabled && p.Role == "server" {
-					body.Port = p.ListenPort
-					break
-				}
-			}
-		}
-		if body.Port == 0 {
-			writeJSON(w, 400, map[string]any{"error": "没有可用的代理端口，请先启用一个混合代理"})
-			return
-		}
-		if err := s.rt.EnableSystemProxy(true, body.Host, body.Port); err != nil {
-			writeJSON(w, 500, map[string]any{"error": err.Error()})
-			return
-		}
-		_ = s.store.SetSetting("sysproxy_wanted", "true")
-		_ = s.store.SetSetting("sysproxy_port", strconv.Itoa(body.Port))
-		writeJSON(w, 200, map[string]any{"ok": true, "enabled": true, "endpoint": sysproxy.ServerString(body.Host, body.Port)})
-	case "disable":
-		if err := s.rt.EnableSystemProxy(false, "", 0); err != nil {
-			writeJSON(w, 500, map[string]any{"error": err.Error()})
-			return
-		}
-		_ = s.store.SetSetting("sysproxy_wanted", "false")
-		writeJSON(w, 200, map[string]any{"ok": true, "enabled": false})
-	case "status":
-		residue, detail := sysproxy.Residue()
-		writeJSON(w, 200, map[string]any{
-			"enabled": s.rt.SystemProxyEnabled(), "current": sysproxy.Current(),
-			"residue": residue, "detail": detail, "supported": sysproxy.Supported(),
-			"platform": sysproxy.Name(),
-		})
-	default:
-		writeJSON(w, 404, map[string]any{"error": "unknown action"})
-	}
-}
 
 // handleTestLatency performs TCP connect latency to a target, optionally via a
 // configured proxy rule.

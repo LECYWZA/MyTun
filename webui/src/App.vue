@@ -26,22 +26,6 @@
           </div>
         </el-tooltip>
 
-        <div class="flex flex-col items-start justify-center leading-none" style="height: 38px">
-          <div class="flex items-center" style="gap: 6px; height: 20px">
-            <span style="font-size: 12px; color: var(--bt-text-secondary); white-space: nowrap">{{ t('header.systemProxy') }}</span>
-            <el-switch
-              v-model="sysproxyOn"
-              size="small"
-              :disabled="sysproxySupported === false"
-              style="--el-switch-on-color: var(--el-color-primary); --el-switch-off-color: var(--el-text-color-placeholder)"
-              :loading="sysproxyBusy"
-              @change="toggleSystemProxy"
-            />
-          </div>
-          <span style="font-size: 10px; color: var(--bt-text-secondary); margin-top: 3px; transform: scale(.85); transform-origin: left; white-space: nowrap">
-            {{ t('header.systemProxyDesc') }}
-          </span>
-        </div>
       </div>
 
       <div class="flex justify-center flex-1 min-w-0">
@@ -75,19 +59,6 @@
 
     <div class="bt-shell-body">
     <main class="bt-main py-6 px-6">
-      <el-alert
-        v-if="sysproxyStatus.residue"
-        type="warning"
-        show-icon
-        :closable="false"
-        class="mb-4"
-        :title="t('overview.sysproxyResidue')"
-      >
-        <div class="flex items-center gap-3">
-          <code>{{ sysproxyStatus.detail }}</code>
-          <el-button size="small" type="warning" plain @click="cleanupResidue">{{ t('overview.sysproxyOff') }}</el-button>
-        </div>
-      </el-alert>
       <router-view />
     </main>
       <SpeedRail v-if="state.authenticated" />
@@ -112,10 +83,6 @@ const state = store.state
 
 const booting = ref(true)
 const isDark = ref(localStorage.getItem('mytun-theme') !== 'light')
-const sysproxyOn = ref(false)
-const sysproxyBusy = ref(false)
-const sysproxyStatus = computed(() => state.systemProxy)
-const sysproxySupported = computed(() => state.systemProxy?.supported !== false)
 
 const tunnelOnline = computed(() => (state.status.inbound || []).length > 0 || (state.status.clients || []).some((c) => c.status === 'connected'))
 const tunnelChipTip = computed(() => {
@@ -136,35 +103,10 @@ function toggleTheme() {
 
 async function onLoginSuccess() {
   await store.bootstrap()
-  sysproxyOn.value = !!(state.status.systemProxy || state.systemProxy.enabled)
   if (state.authenticated) router.push('/overview')
 }
 
-async function toggleSystemProxy(v) {
-  sysproxyBusy.value = true
-  try {
-    const res = await api.systemProxy(v ? 'enable' : 'disable')
-    if (res && res.error) throw new Error(res.error)
-    ElMessage.success(v ? `${t('overview.sysproxyOn')} ${res.endpoint || ''}` : t('overview.sysproxyOff'))
-  } catch (e) {
-    ElMessage.error(e.message)
-    sysproxyOn.value = !v
-  } finally {
-    sysproxyBusy.value = false
-    await store.refreshSystemProxy()
-  }
-}
 
-async function cleanupResidue() {
-  try {
-    await api.systemProxy('disable')
-    await store.refreshSystemProxy()
-    sysproxyOn.value = false
-    ElMessage.success(t('overview.sysproxyOff'))
-  } catch (e) {
-    ElMessage.error(e.message)
-  }
-}
 
 async function doLogout() {
   await store.logout()
@@ -178,7 +120,6 @@ onMounted(async () => {
     // gets the user straight in without a password prompt.
     try { await api.refresh() } catch { /* no session yet */ }
     await store.bootstrap()
-    sysproxyOn.value = !!(state.status.systemProxy || state.systemProxy.enabled)
     if (state.authenticated) router.push('/overview')
   } catch {
     state.authenticated = false

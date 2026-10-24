@@ -21,7 +21,6 @@ import (
 	"github.com/LECYWZA/mytun/internal/qos"
 	"github.com/LECYWZA/mytun/internal/speed"
 	"github.com/LECYWZA/mytun/internal/store"
-	"github.com/LECYWZA/mytun/internal/sysproxy"
 	"github.com/LECYWZA/mytun/internal/tunnel"
 )
 
@@ -52,7 +51,6 @@ type Runtime struct {
 	sched *qos.Scheduler
 	spd   *speed.Meter
 
-	sysOn atomic.Bool
 
 	startedAt time.Time
 	lastApply atomic.Int64
@@ -77,8 +75,6 @@ func New(opts Options) *Runtime {
 	rt.fwdClient = forward.New("client", resolve, rt.onForwardEvent)
 	rt.pxServer = proxy.New("server", resolve, rt.onProxyEvent)
 	rt.pxClient = proxy.New("client", resolve, rt.onProxyEvent)
-	rt.pxServer.LocalBypass = func() bool { return rt.sysOn.Load() }
-	rt.pxClient.LocalBypass = func() bool { return rt.sysOn.Load() }
 
 	rt.sched = qos.New(qos.DefaultConfig())
 	rt.sched.Start()
@@ -367,7 +363,6 @@ func (rt *Runtime) Apply() error {
 	}
 
 	rt.applyQoS()
-	rt.reconcileSystemProxy()
 
 	rt.lastApply.Store(time.Now().UnixMilli())
 	if len(errs) > 0 {
@@ -445,145 +440,6 @@ func (rt *Runtime) Stop() {
 	}
 }
 
-// reconcileSystemProxy keeps the OS proxy pointing at a port that is actually
-// listening. After a restart the saved endpoint can be stale (the proxy was
-// moved to another port), which silently breaks the machine's internet.
-func (rt *Runtime) reconcileSystemProxy() {
-	if !rt.sysOn.Load() {
-		return
-	}
-	port := 0
-	if st, ok := rt.Status()["proxyPorts"].(map[string]any); ok {
-		for _, key := range []string{"client", "server"} {
-			if list, ok := st[key].([]int); ok && len(list) > 0 {
-				port = list[0]
-				break
-			}
-		}
-	}
-	if port == 0 {
-		if err := rt.EnableSystemProxy(false, "", 0); err == nil {
-			log.Printf("[sysproxy] 没有正在运行的代理端口，已关闭系统代理避免断网")
-		}
-		return
-	}
-	saved, _ := strconv.Atoi(rt.opts.Store.GetSetting("sysproxy_port", "0"))
-	if saved != port {
-		if err := rt.EnableSystemProxy(true, "127.0.0.1", port); err == nil {
-			log.Printf("[sysproxy] 系统代理端口已从 %d 调整为实际监听端口 %d", saved, port)
-		}
-	}
-}
-
-// Speed exposes the live traffic meter.
-func (rt *Runtime) Speed() *speed.Meter { return rt.spd }
-
-// Status describes live state for the UI.
-func (rt *Runtime) Status() map[string]any {
-	rt.mu.RLock()
-	servers := make([]map[string]any, 0, len(rt.servers))
-	for _, s := range rt.servers {
-		st := s.Stats()
-		servers = append(servers, st)
-	}
-	sessions := make([]map[string]any, 0, len(rt.sessions))
-	for id, s := range rt.sessions {
-		sessions = append(sessions, map[string]any{
-			"clientId":    id,
-			"remoteAddr":  s.RemoteAddr,
-			"connectedAt": s.ConnectedAt,
-			"channels":    s.ChannelCount(),
-			"lastSeen":    s.LastActivity(),
-			"role":        "inbound",
-		})
-	}
-	rt.mu.RUnlock()
-
-	return map[string]any{
-		"servers":       servers,
-		"inbound":       sessions,
-		"clients":       rt.clients.States(),
-		"forwardPorts":  map[string]any{"server": rt.fwdServer.Listening(), "client": rt.fwdClient.Listening()},
-		"proxyPorts":    map[string]any{"server": rt.pxServer.Listening(), "client": rt.pxClient.Listening()},
-		"systemProxy":   rt.sysOn.Load(),
-		"startedAt":     rt.startedAt,
-		"lastApply":     rt.lastApply.Load(),
-		"applyError":    stringOr(rt.applyErr.Load()),
-		"proxyConns":    rt.pxServer.ActiveConnections() + rt.pxClient.ActiveConnections(),
-		"qos":           rt.sched.Stats(),
-	}
-}
-
-func stringOr(v any) string {
-	if s, ok := v.(string); ok {
-		return s
-	}
-	return ""
-}
-
-// ServerByID returns a tunnel server instance.
-func (rt *Runtime) ServerByID(id string) *tunnel.Server {
-	rt.mu.RLock()
-	defer rt.mu.RUnlock()
-	return rt.servers[id]
-}
-
-// Sessions returns the inbound session map.
-func (rt *Runtime) Sessions() map[string]*mux.Session {
-	rt.mu.RLock()
-	defer rt.mu.RUnlock()
-	out := make(map[string]*mux.Session, len(rt.sessions))
-	for k, v := range rt.sessions {
-		out[k] = v
-	}
-	return out
-}
-
-// ClientManager exposes outbound links.
-func (rt *Runtime) ClientManager() *tunnel.Manager { return rt.clients }
-
-// EnableSystemProxy toggles the OS-level proxy.
-//
-// Enabling also starts a detached watchdog process: if this process is killed
-// (Task Manager, kill -9, crash) the watchdog notices the console is gone and
-// restores the previous proxy settings, so the machine never stays offline.
-func (rt *Runtime) EnableSystemProxy(enable bool, host string, port int) error {
-	if enable {
-		if err := sysproxy.Enable(host, port); err != nil {
-			return err
-		}
-		rt.sysOn.Store(true)
-		if rt.opts.DataDir != "" && rt.opts.APIPort > 0 {
-			if err := sysproxy.StartWatchdog(rt.opts.DataDir, rt.opts.APIPort); err != nil {
-				log.Printf("[sysproxy] watchdog start failed: %v", err)
-			}
-		}
-		return nil
-	}
-	if err := sysproxy.Disable(); err != nil {
-		return err
-	}
-	rt.sysOn.Store(false)
-	return nil
-}
-
-// ResumeSystemProxy re-applies the proxy state after a restart when the config
-// says it should be on (used by --no-autostart=false boot paths).
-func (rt *Runtime) ResumeSystemProxy(enabled bool, host string, port int) error {
-	if !enabled {
-		return nil
-	}
-	return rt.EnableSystemProxy(true, host, port)
-}
-
-// SystemProxyEnabled reports the toggle state.
-func (rt *Runtime) SystemProxyEnabled() bool { return rt.sysOn.Load() }
-
-// DetectSystemProxyResidue checks for a leftover proxy setting from a previous
-// crash, so the UI can offer one-click cleanup.
-func DetectSystemProxyResidue() (bool, string) {
-	return sysproxy.Residue()
-}
 
 // SpeedTest measures latency (TCP connect) and download throughput through a
 // given proxy rule. mode is "local" or "remote".
@@ -630,6 +486,73 @@ func (rt *Runtime) SpeedTest(ctx context.Context, ruleID, target string, timeout
 		"status":  "ok",
 	}, nil
 }
+
+// Speed exposes the live traffic meter.
+func (rt *Runtime) Speed() *speed.Meter { return rt.spd }
+
+// Status describes live state for the UI.
+func (rt *Runtime) Status() map[string]any {
+	rt.mu.RLock()
+	servers := make([]map[string]any, 0, len(rt.servers))
+	for _, s := range rt.servers {
+		st := s.Stats()
+		servers = append(servers, st)
+	}
+	sessions := make([]map[string]any, 0, len(rt.sessions))
+	for id, s := range rt.sessions {
+		sessions = append(sessions, map[string]any{
+			"clientId":    id,
+			"remoteAddr":  s.RemoteAddr,
+			"connectedAt": s.ConnectedAt,
+			"channels":    s.ChannelCount(),
+			"lastSeen":    s.LastActivity(),
+			"role":        "inbound",
+		})
+	}
+	rt.mu.RUnlock()
+
+	return map[string]any{
+		"servers":       servers,
+		"inbound":       sessions,
+		"clients":       rt.clients.States(),
+		"forwardPorts":  map[string]any{"server": rt.fwdServer.Listening(), "client": rt.fwdClient.Listening()},
+		"proxyPorts":    map[string]any{"server": rt.pxServer.Listening(), "client": rt.pxClient.Listening()},
+		"startedAt":     rt.startedAt,
+		"lastApply":     rt.lastApply.Load(),
+		"applyError":    stringOr(rt.applyErr.Load()),
+		"proxyConns":    rt.pxServer.ActiveConnections() + rt.pxClient.ActiveConnections(),
+		"qos":           rt.sched.Stats(),
+	}
+}
+
+func stringOr(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+// ServerByID returns a tunnel server instance.
+func (rt *Runtime) ServerByID(id string) *tunnel.Server {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	return rt.servers[id]
+}
+
+// Sessions returns the inbound session map.
+func (rt *Runtime) Sessions() map[string]*mux.Session {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	out := make(map[string]*mux.Session, len(rt.sessions))
+	for k, v := range rt.sessions {
+		out[k] = v
+	}
+	return out
+}
+
+// ClientManager exposes outbound links.
+func (rt *Runtime) ClientManager() *tunnel.Manager { return rt.clients }
+
 
 func dialViaProxy(r *proxy.Rule, target string, timeout time.Duration) (net.Conn, error) {
 	d := net.Dialer{Timeout: timeout}

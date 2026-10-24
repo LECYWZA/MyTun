@@ -89,8 +89,6 @@ export const api = {
   apply: () => request('/api/apply', { method: 'POST' }),
   stopAll: () => request('/api/service/stop', { method: 'POST' }),
   changePassword: (payload) => request('/api/change-password', { method: 'POST', body: payload }),
-  systemProxy: (action, payload = {}) =>
-    request(`/api/system-proxy/${action}`, { method: action === 'status' ? 'GET' : 'POST', body: action === 'status' ? undefined : payload }),
   trafficLogs: (params = {}) => {
     const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== '' && v !== undefined && v !== null)).toString()
     return request(`/api/traffic-logs${q ? '?' + q : ''}`)

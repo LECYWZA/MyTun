@@ -150,17 +150,12 @@ func main() {
 		return
 	}
 
-	// A backup file on disk means the previous run died without restoring the
-	// proxy. Restore it now, then re-apply whatever the config asked for.
+	// MyTun no longer manages the OS proxy. Older versions did, so if one is
+	// still pinned to a dead port, restore the original settings once here.
 	if sysproxy.HasBackup() {
-		log.Println("检测到上次未正常退出留下的系统代理，正在还原…")
+		log.Println("检测到旧版本遗留的系统代理设置，正在还原…")
 		if err := sysproxy.Disable(); err != nil {
 			log.Printf("还原系统代理失败: %v", err)
-		}
-	}
-	if st.GetSetting("sysproxy_wanted", "false") == "true" {
-		if err := rt.EnableSystemProxy(true, "127.0.0.1", atoiSafe(st.GetSetting("sysproxy_port", "0"))); err != nil {
-			log.Printf("恢复系统代理失败: %v", err)
 		}
 	}
 
@@ -169,7 +164,6 @@ func main() {
 	}
 
 	printBanner(webHost, webPort, dataDir, dbPath, st, rt, useTLS)
-	checkResidue(rt)
 
 	// Periodic status push to websocket clients keeps the UI live without
 	// polling, and lets us detect a dead peer quickly.
@@ -195,12 +189,6 @@ func main() {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 	ticker.Stop()
-	log.Println("正在退出，恢复系统状态…")
-	if rt.SystemProxyEnabled() {
-		if err := rt.EnableSystemProxy(false, "", 0); err != nil {
-			log.Printf("恢复系统代理失败: %v", err)
-		}
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = ctx
@@ -309,14 +297,7 @@ func printBanner(host string, port int, dataDir, dbPath string, st *store.Store,
 		fmt.Printf("  隧道端口: %s:%d  (密码: %s)\n", sv.BindHost, sv.Port, sv.Password)
 	}
 	fmt.Println()
-	fmt.Println("  按 Ctrl+C 退出（会恢复系统代理等全局状态）")
+	fmt.Println("  按 Ctrl+C 退出")
 	fmt.Println()
 }
 
-func checkResidue(rt *runtime.Runtime) {
-	residue, detail := runtime.DetectSystemProxyResidue()
-	if residue {
-		log.Printf("检测到上次异常退出残留的系统代理设置: %s（可在控制台一键清理）", detail)
-	}
-	_ = sysproxy.Name()
-}

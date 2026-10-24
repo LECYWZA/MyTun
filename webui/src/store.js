@@ -18,10 +18,8 @@ const state = reactive({
     clients: [],
     forwardPorts: { server: [], client: [] },
     proxyPorts: { server: [], client: [] },
-    systemProxy: false,
     applyError: '',
   },
-  systemProxy: { enabled: false, current: '', residue: false, detail: '', supported: true, platform: '' },
   audit: [],
   chat: { messages: [], files: [] },
   dirty: false,
@@ -86,7 +84,6 @@ export function useStore() {
 
   async function refreshSystemProxy() {
     try {
-      state.systemProxy = await api.systemProxy('status')
     } catch { /* headless hosts may not support it */ }
   }
 

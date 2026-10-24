@@ -33,9 +33,7 @@
           <el-button plain @click="clearLogs">{{ t('overview.clearLogs') }}</el-button>
         </div>
         <div class="mt-4 text-xs flex flex-col gap-1" style="color: var(--bt-text-secondary)">
-          <div>{{ t('overview.platform') }}: <b>{{ state.systemProxy.platform || '—' }}</b></div>
           <div>{{ t('overview.dbPath') }}: <code>{{ state.status.dbPath || '—' }}</code></div>
-          <div>{{ t('overview.sysproxyOn') }}: {{ state.status.systemProxy ? t('common.yes') : t('common.no') }}</div>
         </div>
       </div>
 

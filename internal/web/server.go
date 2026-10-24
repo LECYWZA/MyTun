@@ -221,7 +221,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.Handle("/api/apply", auth(http.HandlerFunc(s.handleApply)))
 	mux.Handle("/api/service/stop", auth(http.HandlerFunc(s.handleServiceStop)))
 	mux.Handle("/api/change-password", auth(http.HandlerFunc(s.handleChangePassword)))
-	mux.Handle("/api/system-proxy/", auth(http.HandlerFunc(s.handleSystemProxy)))
 	mux.Handle("/api/settings", auth(http.HandlerFunc(s.handleSettings)))
 	mux.Handle("/api/servers", auth(http.HandlerFunc(s.handleServers)))
 	mux.Handle("/api/servers/", auth(http.HandlerFunc(s.handleServers)))
@@ -716,7 +715,9 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
-	if st, err := json.Marshal(map[string]any{"event": "status", "data": s.rt.Status()}); err == nil {
+	live := s.rt.Status()
+	live["dbPath"] = s.store.Path() // shown on the overview; the WS payload needs it too
+	if st, err := json.Marshal(map[string]any{"event": "status", "data": live}); err == nil {
 		client.push(st)
 	}
 
