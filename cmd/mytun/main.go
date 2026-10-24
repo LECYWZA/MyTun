@@ -171,7 +171,8 @@ func main() {
 	go func() {
 		n := 0
 		for range ticker.C {
-			console.Broadcast("status", rt.Status())
+			// nil payload: the web layer builds the canonical status object once per push
+			console.Broadcast("status", nil)
 			n++
 			// Housekeeping every ~20 minutes keeps the audit table bounded on a
 			// long-running box (this is one of the ways "the console gets slow

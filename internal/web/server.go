@@ -689,7 +689,16 @@ func (s *Server) wsBroadcast(event string, payload any) {
 }
 
 // Broadcast is exported so the entrypoint can push status updates.
-func (s *Server) Broadcast(event string, payload any) { s.wsBroadcast(event, payload) }
+func (s *Server) Broadcast(event string, payload any) {
+	// The periodic status push goes through here; enrich it the same way the
+	// per-connection greeting is enriched so the UI never loses dbPath (the
+	// later message would otherwise overwrite the greeting with a payload that
+	// lacks it).
+	if event == "status" {
+		payload = s.statusPayload()
+	}
+	s.wsBroadcast(event, payload)
+}
 
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
@@ -734,9 +743,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
-	live := s.rt.Status()
-	live["dbPath"] = s.store.Path() // shown on the overview; the WS payload needs it too
-	if st, err := json.Marshal(map[string]any{"event": "status", "data": live}); err == nil {
+	if st, err := json.Marshal(map[string]any{"event": "status", "data": s.statusPayload()}); err == nil {
 		client.push(st)
 	}
 

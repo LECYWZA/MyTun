@@ -314,7 +314,11 @@ func (s *Server) saveConfig(p *ConfigPayload) error {
 	return nil
 }
 
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+// statusPayload is the single source of truth for the console status object.
+// The REST endpoint and the websocket push must produce the same shape: when
+// they drifted, the more frequent websocket message overwrote the REST fields
+// with a payload that lacked them (the database path showed up blank).
+func (s *Server) statusPayload() map[string]any {
 	st := s.rt.Status()
 	st["logDropped"] = s.log.Dropped()
 	st["dbPath"] = s.store.Path()
@@ -334,7 +338,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"maxRows":    s.store.GetSetting("audit_max_rows", "50000"),
 		"retainDays": s.store.GetSetting("audit_retain_days", "7"),
 	}
-	writeJSON(w, 200, st)
+	return st
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, s.statusPayload())
 }
 
 func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
