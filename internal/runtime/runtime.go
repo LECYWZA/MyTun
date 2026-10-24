@@ -367,6 +367,7 @@ func (rt *Runtime) Apply() error {
 	}
 
 	rt.applyQoS()
+	rt.reconcileSystemProxy()
 
 	rt.lastApply.Store(time.Now().UnixMilli())
 	if len(errs) > 0 {
@@ -441,6 +442,36 @@ func (rt *Runtime) Stop() {
 	}
 	if rt.spd != nil {
 		rt.spd.Stop()
+	}
+}
+
+// reconcileSystemProxy keeps the OS proxy pointing at a port that is actually
+// listening. After a restart the saved endpoint can be stale (the proxy was
+// moved to another port), which silently breaks the machine's internet.
+func (rt *Runtime) reconcileSystemProxy() {
+	if !rt.sysOn.Load() {
+		return
+	}
+	port := 0
+	if st, ok := rt.Status()["proxyPorts"].(map[string]any); ok {
+		for _, key := range []string{"client", "server"} {
+			if list, ok := st[key].([]int); ok && len(list) > 0 {
+				port = list[0]
+				break
+			}
+		}
+	}
+	if port == 0 {
+		if err := rt.EnableSystemProxy(false, "", 0); err == nil {
+			log.Printf("[sysproxy] 没有正在运行的代理端口，已关闭系统代理避免断网")
+		}
+		return
+	}
+	saved, _ := strconv.Atoi(rt.opts.Store.GetSetting("sysproxy_port", "0"))
+	if saved != port {
+		if err := rt.EnableSystemProxy(true, "127.0.0.1", port); err == nil {
+			log.Printf("[sysproxy] 系统代理端口已从 %d 调整为实际监听端口 %d", saved, port)
+		}
 	}
 }
 

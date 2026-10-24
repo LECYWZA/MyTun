@@ -41,6 +41,7 @@ func main() {
 	autoStart := true
 	generateOnly := false
 	useTLS := false
+	hideConsole := false
 	dnsServer := ""
 
 	// Watchdog mode runs before any normal initialisation.
@@ -80,6 +81,8 @@ func main() {
 			}
 		case "--tls":
 			useTLS = true
+		case "--hide":
+			hideConsole = true
 		case "--no-autostart":
 			autoStart = false
 		case "--init-only":
@@ -96,6 +99,9 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("[mytun] ")
 
+	if hideConsole {
+		sysproxy.HideConsole()
+	}
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		log.Fatalf("创建数据目录失败: %v", err)
 	}
@@ -241,6 +247,7 @@ func usage() {
   --host <地址>      Web 控制台监听地址（默认 127.0.0.1；局域网访问用 0.0.0.0）
   --tls              控制台启用 HTTPS（自签证书，自动生成在数据目录）
   --data <目录>      数据目录（默认系统配置目录下的 MyTun）
+  --hide             隐藏控制台窗口（Windows 开机自启时用，避免留黑窗口）
   --no-autostart     启动时不自动拉起已启用的隧道/代理
   --init-only        仅初始化数据库后退出
   --dns <ip>         指定 DNS 服务器（Android 等无 resolv.conf 的环境）

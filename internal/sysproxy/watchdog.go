@@ -18,6 +18,13 @@ import (
 // offline, which is exactly the failure mode this guards against.
 const watchdogFlag = "--watchdog"
 
+// lockFreshness is how long a lock file stays "alive" without a refresh. The
+// watchdog rewrites it every heartbeatInterval.
+const (
+	lockFreshness     = 20 * time.Second
+	heartbeatInterval = 5 * time.Second
+)
+
 // StartWatchdog launches a detached copy of this binary in watchdog mode.
 // Safe to call repeatedly: a lock file ensures only one instance runs.
 func StartWatchdog(dataDir string, port int) error {
@@ -26,9 +33,11 @@ func StartWatchdog(dataDir string, port int) error {
 		return err
 	}
 	lock := filepath.Join(dataDir, "watchdog.lock")
-	if pid, ok := readLockPID(lock); ok && processAlive(pid) {
-		// A live watchdog already supervises this installation.
-		return nil
+	// A PID alone is not a reliable identity: Windows and Linux both reuse PIDs,
+	// so a crashed watchdog's id can land on an unrelated process and make us
+	// think supervision is still running. The lock carries a heartbeat instead.
+	if fi, err := os.Stat(lock); err == nil && time.Since(fi.ModTime()) < lockFreshness {
+		return nil // a live watchdog refreshed it recently
 	}
 	_ = os.Remove(lock) // stale lock from a crashed watchdog
 	cmd := exec.Command(exe, watchdogFlag, fmt.Sprintf("http://127.0.0.1:%d/api/health", port), dataDir)
@@ -77,6 +86,24 @@ func RunWatchdog(healthURL, dataDir string) {
 	_, _ = fmt.Fprintf(f, "%d", os.Getpid())
 	_ = f.Close()
 	defer os.Remove(lock)
+
+	// Keep the lock fresh so a future StartWatchdog can tell "running" from
+	// "crashed and left a stale file" without trusting PID reuse.
+	hbDone := make(chan struct{})
+	defer close(hbDone)
+	go func() {
+		t := time.NewTicker(heartbeatInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-hbDone:
+				return
+			case <-t.C:
+				now := time.Now()
+				_ = os.Chtimes(lock, now, now)
+			}
+		}
+	}()
 
 	client := &http.Client{Timeout: 3 * time.Second}
 	// Grace period: the console may still be starting.
