@@ -20,6 +20,8 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 import androidx.core.app.ActivityCompat;
 
 /**
@@ -80,6 +82,21 @@ public class MainActivity extends AppCompatActivity {
 
         setContentView(root);
 
+        // Android 15 forces edge-to-edge, so the WebView would otherwise draw
+        // under the status bar and the gesture bar. Padding the root view is far
+        // more reliable than relying on env(safe-area-inset-*) inside WebView.
+        final View shell = root;
+        ViewCompat.setOnApplyWindowInsetsListener(shell, (v, insets) -> {
+            androidx.core.graphics.Insets bars = insets.getInsets(
+                    WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
+            int top = bars.top;
+            if (top == 0) {
+                top = getStatusBarHeightPx();
+            }
+            v.setPadding(bars.left, top, bars.right, bars.bottom);
+            return insets;
+        });
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
                 && ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED) {
@@ -88,6 +105,14 @@ public class MainActivity extends AppCompatActivity {
 
         startCore();
         waitForCore(0);
+    }
+
+    private int getStatusBarHeightPx() {
+        int id = getResources().getIdentifier("status_bar_height", "dimen", "android");
+        if (id > 0) {
+            return getResources().getDimensionPixelSize(id);
+        }
+        return (int) (24 * getResources().getDisplayMetrics().density);
     }
 
     private void startCore() {

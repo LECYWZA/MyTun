@@ -63,6 +63,15 @@
     </main>
       <SpeedRail v-if="state.authenticated" />
     </div>
+
+    <!-- Mobile tab bar: a top menu is unusable on a phone, so navigation lives
+         at the bottom where a thumb can reach it. Hidden above 768px. -->
+    <nav class="bt-tabbar">
+      <router-link v-for="it in tabItems" :key="it.path" :to="it.path" class="bt-tab" :class="{ 'bt-tab-active': $route.path === it.path }">
+        <el-icon :size="20"><component :is="it.icon" /></el-icon>
+        <span>{{ it.label }}</span>
+      </router-link>
+    </nav>
   </div>
 </template>
 
@@ -80,6 +89,18 @@ import { useStore } from './store'
 const router = useRouter()
 const store = useStore()
 const state = store.state
+
+// Bottom tab bar entries. Element Plus icons are registered globally, so the
+// names resolve through <component :is>.
+const tabItems = computed(() => [
+  { path: '/overview', icon: 'Odometer', label: t('nav.overview') },
+  { path: '/config', icon: 'Setting', label: t('nav.config') },
+  { path: '/tunnels', icon: 'Connection', label: t('nav.tunnels') },
+  { path: '/proxies', icon: 'Switch', label: t('nav.proxies') },
+  { path: '/tester', icon: 'DataAnalysis', label: t('nav.tester') },
+  { path: '/logs', icon: 'DataLine', label: t('nav.logs') },
+  { path: '/chat', icon: 'ChatDotRound', label: t('nav.chat') },
+])
 
 const booting = ref(true)
 const isDark = ref(localStorage.getItem('mytun-theme') !== 'light')

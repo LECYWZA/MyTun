@@ -1206,3 +1206,85 @@ html.dark .el-table {
     width: 100% !important;
   }
 }
+
+/* ---- Mobile layout ----
+   Phones render this console inside a WebView that draws edge to edge, so the
+   shell has to reserve the status bar and the gesture bar itself. */
+.bt-app-shell {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.bt-tabbar {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  /* Navigation moves to the bottom; the horizontal menu does not fit anyway. */
+  .bt-nav-header {
+    display: none !important;
+  }
+
+  .bt-header {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .bt-shell-body {
+    flex-direction: column;
+  }
+
+  .bt-main {
+    padding: 14px 12px calc(76px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+
+  /* The speed rail takes the whole width below the content on a phone. */
+  .bt-rail {
+    width: 100%;
+    margin: 0 0 calc(76px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .bt-tabbar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 60;
+    display: flex;
+    align-items: stretch;
+    justify-content: space-around;
+    gap: 2px;
+    padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px));
+    background: var(--bt-header-bg);
+    backdrop-filter: blur(12px);
+    border-top: 1px solid var(--bt-header-border);
+  }
+
+  .bt-tab {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    padding: 4px 0;
+    border-radius: 10px;
+    color: var(--bt-text-muted);
+    text-decoration: none;
+    font-size: 10px;
+    line-height: 1.1;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  .bt-tab span {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .bt-tab-active {
+    color: var(--bt-primary);
+    background: var(--bt-primary-light);
+  }
+}
