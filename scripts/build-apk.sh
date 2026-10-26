@@ -10,27 +10,45 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# The toolchain lives under a skill directory whose name has changed once
-# already; probe the known locations instead of hard-failing.
+# Toolchain discovery. Three cases:
+#   1. an explicit bundle layout (MYTUN_ANDROID_SDKS=<root> with sdks/android-sdk,
+#      sdks/jdk17 and gradle-home inside) -- what the dev container uses;
+#   2. the same bundle found at one of the known skill paths;
+#   3. a generic environment (CI): ANDROID_HOME/JAVA_HOME provided and gradle on
+#      PATH.
+MODE=""
 if [ -n "${MYTUN_ANDROID_SDKS:-}" ]; then
-	SKILL_SDKS="$MYTUN_ANDROID_SDKS"
+	SKILL_SDKS="$MYTUN_ANDROID_SDKS"; MODE="bundle"
 else
 	SKILL_SDKS=""
-	for cand in 		/data/dsh/.dsh/skills/openwrt-dev-flutter-android-build 		/data/dsh/.dsh/skills/flutter-android-build; do
-		if [ -d "$cand/sdks/android-sdk" ]; then
-			SKILL_SDKS="$cand"
-			break
-		fi
+	for cand in \
+		/data/dsh/.dsh/skills/openwrt-dev-flutter-android-build \
+		/data/dsh/.dsh/skills/flutter-android-build; do
+		if [ -d "$cand/sdks/android-sdk" ]; then SKILL_SDKS="$cand"; MODE="bundle"; break; fi
 	done
-	[ -n "$SKILL_SDKS" ] || { echo "!! Android SDK not found (set MYTUN_ANDROID_SDKS)" >&2; exit 1; }
 fi
-GOHOME="${MYTUN_GOHOME:-/data/dsh/go-sdk/go}"
-GRADLE_BIN="${MYTUN_GRADLE:-}"
-if [ -z "$GRADLE_BIN" ]; then
-	GRADLE_BIN="$(ls "$SKILL_SDKS"/gradle-home/wrapper/dists/gradle-*/[a-z0-9]*/gradle-*/bin/gradle 2>/dev/null | head -1)"
+if [ "$MODE" = "bundle" ]; then
+	GOHOME="${MYTUN_GOHOME:-/data/dsh/go-sdk/go}"
+	export JAVA_HOME="$SKILL_SDKS/sdks/jdk17"
+	export ANDROID_HOME="$SKILL_SDKS/sdks/android-sdk"
+	export ANDROID_SDK_ROOT="$ANDROID_HOME"
+	export GRADLE_USER_HOME="$SKILL_SDKS/gradle-home"
+	GRADLE_BIN="${MYTUN_GRADLE:-$(ls "$SKILL_SDKS"/gradle-home/wrapper/dists/gradle-*/[a-z0-9]*/gradle-*/bin/gradle 2>/dev/null | head -1)}"
+else
+	echo "== generic android environment =="
+	: "${ANDROID_HOME:?set ANDROID_HOME (Android SDK)}"
+	: "${JAVA_HOME:?set JAVA_HOME (JDK 17)}"
+	export ANDROID_SDK_ROOT="$ANDROID_HOME"
+	GOHOME="${MYTUN_GOHOME:-$(dirname "$(dirname "$(command -v go)")")}"
+	GRADLE_BIN="${MYTUN_GRADLE:-$(command -v gradle || true)}"
+	export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$HOME/.gradle}"
 fi
-[ -n "$GRADLE_BIN" ] || { echo "!! gradle not found under $SKILL_SDKS/gradle-home" >&2; exit 1; }
-NDK="${MYTUN_NDK:-$SKILL_SDKS/sdks/android-sdk/ndk/26.3.11579264}"
+[ -n "$GRADLE_BIN" ] || { echo "!! gradle not found (install gradle 8.x or set MYTUN_GRADLE)" >&2; exit 1; }
+NDK="${MYTUN_NDK:-$ANDROID_HOME/ndk/26.3.11579264}"
+if [ ! -d "$NDK" ]; then
+	NDK="$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | head -1)"
+fi
+[ -n "$NDK" ] && [ -d "$NDK" ] || { echo "!! Android NDK not found under $ANDROID_HOME/ndk" >&2; exit 1; }
 TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
 export JAVA_HOME="$SKILL_SDKS/sdks/jdk17"

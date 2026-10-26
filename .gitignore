@@ -5,7 +5,10 @@ bin/
 android/app/src/main/assets/mytun-core-*
 android/app/build/
 android/.gradle/
-.keystore/
+# Keep the signing key in the repo: a changing key makes every APK
+# an incompatible upgrade for users. Passwords are the gradle defaults.
+.keystore/*
+!.keystore/mytun.jks
 
 # runtime data
 data/
