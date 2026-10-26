@@ -51,10 +51,6 @@ fi
 [ -n "$NDK" ] && [ -d "$NDK" ] || { echo "!! Android NDK not found under $ANDROID_HOME/ndk" >&2; exit 1; }
 TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
-export JAVA_HOME="$SKILL_SDKS/sdks/jdk17"
-export ANDROID_HOME="$SKILL_SDKS/sdks/android-sdk"
-export ANDROID_SDK_ROOT="$ANDROID_HOME"
-export GRADLE_USER_HOME="$SKILL_SDKS/gradle-home"
 export PATH="$GOHOME/bin:$JAVA_HOME/bin:$PATH"
 export GOFLAGS=-mod=mod
 # Only fall back to the dev container's paths when they actually exist; on a CI
@@ -110,7 +106,12 @@ fi
 
 echo "== gradle assembleRelease =="
 cd "$ROOT/android"
-"$GRADLE_BIN" --no-daemon -I "$SKILL_SDKS/templates/init.gradle" assembleRelease "$@"
+GRADLE_INIT=""
+if [ -n "${SKILL_SDKS:-}" ] && [ -f "$SKILL_SDKS/templates/init.gradle" ]; then
+	GRADLE_INIT="-I $SKILL_SDKS/templates/init.gradle"
+fi
+# shellcheck disable=SC2086
+"$GRADLE_BIN" --no-daemon $GRADLE_INIT assembleRelease "$@"
 
 APK="$ROOT/android/app/build/outputs/apk/release/app-release.apk"
 mkdir -p "$ROOT/dist"
