@@ -57,9 +57,11 @@ export ANDROID_SDK_ROOT="$ANDROID_HOME"
 export GRADLE_USER_HOME="$SKILL_SDKS/gradle-home"
 export PATH="$GOHOME/bin:$JAVA_HOME/bin:$PATH"
 export GOFLAGS=-mod=mod
-export GOPATH="${GOPATH:-/data/dsh/gopath}"
-export GOMODCACHE="${GOMODCACHE:-/data/dsh/gopath/pkg/mod}"
-export GOCACHE="${GOCACHE:-/data/dsh/gopath/build-cache}"
+# Only fall back to the dev container's paths when they actually exist; on a CI
+# runner (and any normal machine) Go's own defaults must win.
+if [ -z "${GOPATH:-}" ] && [ -d /data/dsh/gopath ]; then export GOPATH=/data/dsh/gopath; fi
+if [ -z "${GOMODCACHE:-}" ] && [ -d /data/dsh/gopath/pkg/mod ]; then export GOMODCACHE=/data/dsh/gopath/pkg/mod; fi
+if [ -z "${GOCACHE:-}" ] && [ -d /data/dsh/gopath/build-cache ]; then export GOCACHE=/data/dsh/gopath/build-cache; fi
 export GRADLE_OPTS="-Xmx2g -Dorg.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m -Dorg.gradle.workers.max=2 -Dorg.gradle.parallel=false -Dorg.gradle.daemon=false"
 
 JNI="$ROOT/android/app/src/main/jniLibs"
