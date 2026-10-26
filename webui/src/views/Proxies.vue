@@ -52,13 +52,23 @@
           </el-form-item>
         </div>
 
-        <div v-if="p.useAuth" class="grid grid-cols-2 gap-3 mt-2">
-          <el-form-item :label="t('proxies.user')" class="!mb-0">
-            <el-input v-model="p.user" @input="store.markDirty()" />
-          </el-form-item>
-          <el-form-item :label="t('proxies.pass')" class="!mb-0">
-            <el-input v-model="p.pass" show-password @focus="reveal(p)" @input="store.markDirty()" />
-          </el-form-item>
+        <div v-if="p.useAuth" class="mt-2">
+          <div class="flex items-center justify-between mb-2">
+            <div class="text-xs" style="color: var(--bt-text-secondary)">{{ t('proxies.authAccounts') }}</div>
+            <el-button size="small" plain :icon="Plus" @click="addAccount(p)">{{ t('proxies.addAccount') }}</el-button>
+          </div>
+          <div v-for="(a, ai) in ensureAccounts(p)" :key="ai" class="flex items-end gap-2 mb-2">
+            <el-form-item :label="t('proxies.user')" class="!mb-0" style="width: 200px">
+              <el-input v-model="a.user" :placeholder="'user' + (ai + 1)" @input="store.markDirty()" />
+            </el-form-item>
+            <el-form-item :label="t('proxies.pass')" class="!mb-0" style="width: 220px">
+              <el-input v-model="a.pass" show-password placeholder="password" @focus="reveal(p)" @input="store.markDirty()" />
+            </el-form-item>
+            <el-button size="small" type="danger" plain :icon="Delete" @click="removeAccount(p, ai)" />
+          </div>
+          <div v-if="!ensureAccounts(p).length" class="text-xs" style="color: var(--bt-text-tertiary)">
+            {{ t('proxies.noAccountHint') }}
+          </div>
         </div>
 
         <div class="mt-3 text-xs" style="color: var(--bt-text-secondary)">
@@ -99,6 +109,25 @@ import { t } from '../i18n'
 import { useStore } from '../store'
 
 const store = useStore()
+
+// ensureAccounts returns the editable credential list for a listener. Old
+// configs only have the legacy single user/pass pair; expose it as one row so
+// the operator can convert it by simply adding another account.
+function ensureAccounts(p) {
+  if (!Array.isArray(p.authUsers)) p.authUsers = []
+  return p.authUsers
+}
+
+function addAccount(p) {
+  if (!Array.isArray(p.authUsers)) p.authUsers = []
+  p.authUsers.push({ user: '', pass: '' })
+  store.markDirty()
+}
+
+function removeAccount(p, idx) {
+  p.authUsers.splice(idx, 1)
+  store.markDirty()
+}
 
 async function reveal(row) {
   if (row.pass !== MASK || !row.id) return

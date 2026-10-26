@@ -66,9 +66,14 @@ func (s *Server) loadConfig() (*ConfigPayload, error) {
 		}
 	}
 	for i := range proxies {
-		if proxies[i].Pass != "" {
-			proxies[i].Pass = maskedPassword
+		// Old configs carry a single user/pass pair. Surface it as a normal
+		// account row so the operator can see and extend it instead of staring
+		// at an empty list while auth still uses the hidden pair.
+		if len(proxies[i].AuthUsers) == 0 && (proxies[i].User != "" || proxies[i].Pass != "") {
+			proxies[i].AuthUsers = []store.AuthUser{{User: proxies[i].User, Pass: proxies[i].Pass}}
+			proxies[i].User, proxies[i].Pass = "", ""
 		}
+		maskProxyRow(&proxies[i])
 	}
 	// Never hand the UI a null array: it forces every consumer to special-case it.
 	if servers == nil {
@@ -85,6 +90,18 @@ func (s *Server) loadConfig() (*ConfigPayload, error) {
 	}
 	return &ConfigPayload{Servers: servers, Clients: clients, Forwards: forwards, Proxies: proxies,
 		Settings: settings, Version: 2, Revision: rev}, nil
+}
+
+// maskProxyRow hides credential values before the config is sent to the UI.
+func maskProxyRow(r *store.ProxyRow) {
+	if r.Pass != "" {
+		r.Pass = maskedPassword
+	}
+	for i := range r.AuthUsers {
+		if r.AuthUsers[i].Pass != "" {
+			r.AuthUsers[i].Pass = maskedPassword
+		}
+	}
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -165,18 +182,49 @@ func (s *Server) keepClientSecret(row *store.ClientRow) {
 }
 
 func (s *Server) keepProxySecret(row *store.ProxyRow) {
-	if row.Pass != maskedPassword {
-		return
+	// The account list wins; drop the legacy pair so the two cannot drift.
+	if len(row.AuthUsers) > 0 {
+		row.User, row.Pass = "", ""
 	}
+	// Masked values come straight back from the UI; put the real secrets back
+	// so an untouched form does not overwrite them with "********".
+	var stored *store.ProxyRow
 	if rows, err := s.store.Proxies(); err == nil {
-		for _, r := range rows {
+		for i, r := range rows {
 			if r.ID == row.ID {
-				row.Pass = r.Pass
-				return
+				stored = &rows[i]
+				break
 			}
 		}
 	}
-	row.Pass = ""
+	if row.Pass == maskedPassword {
+		if stored != nil {
+			row.Pass = stored.Pass
+		} else {
+			row.Pass = ""
+		}
+	}
+	// Known credentials, including the legacy single pair: a config that was
+	// displayed as one account row must keep working when saved back unchanged.
+	known := map[string]string{}
+	if stored != nil {
+		if stored.User != "" || stored.Pass != "" {
+			known[stored.User] = stored.Pass
+		}
+		for _, prev := range stored.AuthUsers {
+			known[prev.User] = prev.Pass
+		}
+	}
+	for i := range row.AuthUsers {
+		if row.AuthUsers[i].Pass != maskedPassword {
+			continue
+		}
+		if pw, ok := known[row.AuthUsers[i].User]; ok {
+			row.AuthUsers[i].Pass = pw
+		} else {
+			row.AuthUsers[i].Pass = ""
+		}
+	}
 }
 
 // invalidConfig marks errors caused by bad input (400) as opposed to storage
@@ -229,6 +277,14 @@ func (s *Server) saveConfig(p *ConfigPayload) error {
 		}
 		if r.ListenPort > 65535 || r.TargetPort > 65535 {
 			return invalidf("端口 %d → %d 超出范围（1-65535）", r.ListenPort, r.TargetPort)
+		}
+		if r.Role == "local" {
+			if r.TargetHost == "" || r.TargetPort <= 0 {
+				return invalidf("本机转发 %s 缺少目标地址/端口", r.Note)
+			}
+			if r.Network != "" && r.Network != "tcp" && r.Network != "udp" && r.Network != "both" {
+				return invalidf("本机转发 %s 的协议只能是 tcp / udp / both", r.Note)
+			}
 		}
 		key := r.Role + ":" + strconv.Itoa(r.ListenPort)
 		if prev, ok := seenF[key]; ok && r.ListenPort > 0 {
@@ -413,6 +469,7 @@ func (s *Server) handleRevealSecret(w http.ResponseWriter, r *http.Request) {
 	kind := r.URL.Query().Get("kind")
 	id := r.URL.Query().Get("id")
 	var pw, err = "", error(nil)
+	var accts []store.AuthUser
 	switch kind {
 	case "server":
 		var rows []store.ServerRow
@@ -436,6 +493,7 @@ func (s *Server) handleRevealSecret(w http.ResponseWriter, r *http.Request) {
 		for _, x := range rows {
 			if x.ID == id {
 				pw = x.Pass
+				accts = x.AuthUsers
 			}
 		}
 	default:
@@ -446,7 +504,11 @@ func (s *Server) handleRevealSecret(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"password": pw})
+	resp := map[string]any{"password": pw}
+	if len(accts) > 0 {
+		resp["authUsers"] = accts
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {

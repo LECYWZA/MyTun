@@ -118,9 +118,11 @@ netsh advfirewall firewall add rule name="MyTun" dir=in action=allow program="C:
 | 卡片 | 用途 |
 |---|---|
 | 服务端转发 | 本机监听端口 → 流量经隧道送到**对端客户端**侧的目标地址（把内网服务发布出去） |
-| 客户端转发 | 本机监听端口 → 流量经**上游隧道**送出到目标地址 |
+| 客户端转发 | 本机监听端口 → 流量经**上游隧道**送出到目标地址；可指定走哪一条上游隧道 |
+| **本机转发** | 不经任何隧道，本机直接转发到目标，**支持 TCP 与 UDP**（类似 nginx 的 `stream{}`） |
 
-同一条隧道可挂任意多条映射，服务端始终只开一个端口。
+同一条隧道可挂任意多条映射，服务端始终只开一个端口。本机转发适合「同机或同网段的端口中转」，
+比如把局域网某台设备的 TCP/UDP 端口换一个地址暴露出来。
 
 ### 3. 混合代理
 
@@ -129,7 +131,8 @@ netsh advfirewall firewall add rule name="MyTun" dir=in action=allow program="C:
 - **本机直连**：由本机直接出网
 - **经隧道**：由对端客户端出网（可指定客户端）
 
-支持 HTTP Basic / SOCKS5 用户名密码认证，以及按来源 IP 的 allow/deny 访问控制（CIDR）。
+**认证支持多个账号**：在「认证账号」里可以添加任意多组用户名/密码（账号A、账号B、账号C……），
+任一账号都能连，删除某个账号即立刻失效。也支持按来源 IP 的 allow/deny 访问控制（CIDR）。
 
 ### 4. 流量公平调度
 
@@ -161,6 +164,23 @@ netsh advfirewall firewall add rule name="MyTun" dir=in action=allow program="C:
 | `--init-only` | 只初始化数据目录与数据库，不启动服务 |
 
 ---
+
+## 打包与加壳
+
+发布用 `scripts/build-release.sh`：编译四平台 → 用 UPX 压缩（Linux/Windows）→ 自动跑一次冒烟测试。
+
+```bash
+MYTUN_UPX=/path/to/upx bash scripts/build-release.sh
+```
+
+- 加壳后 Windows/Linux 二进制约 **5MB**（未加壳约 15MB）
+- 冒烟测试会真正启动压缩后的 Linux 二进制并请求 `/api/health`，跑不通直接失败
+- macOS 不加壳（UPX 对 Mach-O 支持需要 `--force-macos`，仍是实验特性）
+- 注意：`upx` 自己会用 `UPX` 这个环境变量存默认参数，所以脚本用 `MYTUN_UPX` 指定路径
+
+**关于加壳与杀毒软件**：UPX 是通用压缩壳，多数杀软认识它。但它同时会隐去字符串特征，
+个别引擎对"加壳 + 未签名 + 监听端口"的组合会更敏感。如果公司策略软件仍报毒，
+最稳的办法是把文件的 SHA256 交给 IT 加白，或买一张代码签名证书。
 
 ## 构建
 

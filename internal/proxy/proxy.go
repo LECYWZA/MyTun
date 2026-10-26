@@ -10,6 +10,7 @@
 package proxy
 
 import (
+	"crypto/subtle"
 	"bufio"
 	"encoding/base64"
 	"errors"
@@ -33,12 +34,50 @@ type Rule struct {
 	ListenPort     int      `json:"listenPort"`
 	NetworkMode    string   `json:"networkMode"` // local | remote
 	TargetClientID string   `json:"targetClientId"`
-	UseAuth        bool     `json:"useAuth"`
-	User           string   `json:"user"`
-	Pass           string   `json:"pass"`
+	UseAuth        bool       `json:"useAuth"`
+	User           string     `json:"user"` // legacy single account
+	Pass           string     `json:"pass"`
+	AuthUsers      []AuthUser `json:"authUsers"` // preferred: any of these may connect
 	AllowIPs       []string `json:"allowIps"`
 	DenyIPs        []string `json:"denyIps"`
 	Enabled        bool     `json:"enabled"`
+}
+
+// authUsersEqual compares two credential lists for change detection.
+func authUsersEqual(a, b []AuthUser) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// AuthUser is one accepted credential pair for a proxy listener.
+type AuthUser struct {
+	User string `json:"user"`
+	Pass string `json:"pass"`
+}
+
+// authOK reports whether the supplied credentials match any configured account.
+// The legacy single user/pass pair keeps working for existing configs.
+func (r Rule) authOK(user, pass string) bool {
+	for _, a := range r.AuthUsers {
+		if subtle.ConstantTimeCompare([]byte(a.User), []byte(user)) == 1 &&
+			subtle.ConstantTimeCompare([]byte(a.Pass), []byte(pass)) == 1 {
+			return true
+		}
+	}
+	if r.User != "" || r.Pass != "" {
+		if subtle.ConstantTimeCompare([]byte(r.User), []byte(user)) == 1 &&
+			subtle.ConstantTimeCompare([]byte(r.Pass), []byte(pass)) == 1 {
+			return true
+		}
+	}
+	return false
 }
 
 // Event is one proxied connection for the audit log.
@@ -124,7 +163,8 @@ func (p *Proxy) Apply(rules []Rule) map[int]string {
 		if l, ok := p.listeners[port]; ok {
 			if l.rule.ListenHost != r.ListenHost || l.rule.NetworkMode != r.NetworkMode ||
 				l.rule.TargetClientID != r.TargetClientID || l.rule.UseAuth != r.UseAuth ||
-				l.rule.User != r.User || l.rule.Pass != r.Pass {
+				l.rule.User != r.User || l.rule.Pass != r.Pass ||
+				!authUsersEqual(l.rule.AuthUsers, r.AuthUsers) {
 				l.closed.Store(true)
 				_ = l.ln.Close()
 				delete(p.listeners, port)
@@ -341,7 +381,7 @@ func (p *Proxy) socks5Auth(conn net.Conn, rule Rule, ev *Event) bool {
 		ev.Error = err.Error()
 		return false
 	}
-	if string(ubuf) == rule.User && string(pbuf) == rule.Pass {
+	if rule.authOK(string(ubuf), string(pbuf)) {
 		_, _ = conn.Write([]byte{0x01, 0x00})
 		return true
 	}
@@ -469,7 +509,7 @@ func (p *Proxy) handleHTTP(conn net.Conn, br *bufio.Reader, rule Rule, ev *Event
 			return
 		}
 		u, pw, _ := strings.Cut(string(raw), ":")
-		if u != rule.User || pw != rule.Pass {
+		if !rule.authOK(u, pw) {
 			_, _ = conn.Write([]byte("HTTP/1.1 403 Forbidden\r\n\r\n"))
 			ev.Status = "failed"
 			ev.Error = "http: bad credentials"

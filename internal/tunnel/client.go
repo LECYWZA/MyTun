@@ -362,6 +362,24 @@ func (m *Manager) StopAll() {
 }
 
 // Session finds a live session by link id, falling back to the only live one.
+// SessionByClientID finds a live outbound link by the client id it presents to
+// the server. Port rules on the client side address an upstream this way.
+func (m *Manager) SessionByClientID(clientID string) *mux.Session {
+	if clientID == "" {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, c := range m.conns {
+		if c.cfg.ClientID == clientID {
+			if s := c.Session(); s != nil {
+				return s
+			}
+		}
+	}
+	return nil
+}
+
 func (m *Manager) Session(linkID string) *mux.Session {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

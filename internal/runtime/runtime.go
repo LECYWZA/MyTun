@@ -45,6 +45,7 @@ type Runtime struct {
 
 	fwdServer *forward.Forwarder
 	fwdClient *forward.Forwarder
+	fwdLocal  *forward.LocalForwarder
 	pxServer  *proxy.Proxy
 	pxClient  *proxy.Proxy
 
@@ -73,6 +74,7 @@ func New(opts Options) *Runtime {
 	resolve := rt.resolveSession
 	rt.fwdServer = forward.New("server", resolve, rt.onForwardEvent)
 	rt.fwdClient = forward.New("client", resolve, rt.onForwardEvent)
+	rt.fwdLocal = forward.NewLocal(rt.onForwardEvent)
 	rt.pxServer = proxy.New("server", resolve, rt.onProxyEvent)
 	rt.pxClient = proxy.New("client", resolve, rt.onProxyEvent)
 
@@ -103,6 +105,14 @@ func (rt *Runtime) resolveSession(clientID string) *mux.Session {
 	defer rt.mu.RUnlock()
 	if clientID != "" {
 		if s, ok := rt.sessions[clientID]; ok {
+			return s
+		}
+		// Client-side rules address an upstream link instead of an inbound
+		// peer: accept the configured row id or the tunnel identity.
+		if s := rt.clients.Session(clientID); s != nil {
+			return s
+		}
+		if s := rt.clients.SessionByClientID(clientID); s != nil {
 			return s
 		}
 		// An explicitly requested peer that is not connected must fail loudly:
@@ -344,6 +354,20 @@ func (rt *Runtime) Apply() error {
 	for port, e := range rt.fwdClient.Apply(filterRole(fwdRules, "client")) {
 		errs = append(errs, fmt.Sprintf("forward client :%d: %s", port, e))
 	}
+	// Plain TCP/UDP port forwards that never enter a tunnel.
+	var localRules []forward.LocalRule
+	for _, r := range fw {
+		if r.Role != "local" {
+			continue
+		}
+		localRules = append(localRules, forward.LocalRule{
+			ID: r.ID, Network: r.Network, ListenHost: r.ListenHost, ListenPort: r.ListenPort,
+			TargetHost: r.TargetHost, TargetPort: r.TargetPort, Enabled: r.Enabled,
+		})
+	}
+	for port, e := range rt.fwdLocal.Apply(localRules) {
+		errs = append(errs, fmt.Sprintf("local forward :%d: %s", port, e))
+	}
 
 	// 4. Mixed proxies.
 	px, err := rt.opts.Store.Proxies()
@@ -355,7 +379,8 @@ func (rt *Runtime) Apply() error {
 		pxRules = append(pxRules, proxy.Rule{
 			ID: r.ID, Role: r.Role, ListenHost: r.ListenHost, ListenPort: r.ListenPort,
 			NetworkMode: r.NetworkMode, TargetClientID: r.TargetClientID, UseAuth: r.UseAuth,
-			User: r.User, Pass: r.Pass, AllowIPs: store.SplitList(r.AllowIPs), DenyIPs: store.SplitList(r.DenyIPs),
+			User: r.User, Pass: r.Pass, AuthUsers: toProxyAuth(r.AuthUsers),
+			AllowIPs: store.SplitList(r.AllowIPs), DenyIPs: store.SplitList(r.DenyIPs),
 			Enabled: r.Enabled,
 		})
 	}
@@ -413,6 +438,18 @@ func filterRole(in []forward.Rule, role string) []forward.Rule {
 	return out
 }
 
+// toProxyAuth converts stored credentials into the proxy package's type.
+func toProxyAuth(in []store.AuthUser) []proxy.AuthUser {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]proxy.AuthUser, 0, len(in))
+	for _, a := range in {
+		out = append(out, proxy.AuthUser{User: a.User, Pass: a.Pass})
+	}
+	return out
+}
+
 func filterRolePx(in []proxy.Rule, role string) []proxy.Rule {
 	out := make([]proxy.Rule, 0, len(in))
 	for _, r := range in {
@@ -434,6 +471,7 @@ func (rt *Runtime) Stop() {
 	rt.clients.StopAll()
 	rt.fwdServer.Stop()
 	rt.fwdClient.Stop()
+	rt.fwdLocal.Stop()
 	rt.pxServer.Stop()
 	rt.pxClient.Stop()
 	if rt.sched != nil {
@@ -466,7 +504,7 @@ func (rt *Runtime) SpeedTest(ctx context.Context, ruleID, target string, timeout
 			if r.ID == ruleID {
 				p := proxy.Rule{ID: r.ID, Role: r.Role, ListenHost: r.ListenHost, ListenPort: r.ListenPort,
 					NetworkMode: r.NetworkMode, TargetClientID: r.TargetClientID,
-					UseAuth: r.UseAuth, User: r.User, Pass: r.Pass}
+					UseAuth: r.UseAuth, User: r.User, Pass: r.Pass, AuthUsers: toProxyAuth(r.AuthUsers)}
 				pxRule = &p
 				break
 			}
@@ -519,7 +557,7 @@ func (rt *Runtime) Status() map[string]any {
 		"servers":       servers,
 		"inbound":       sessions,
 		"clients":       rt.clients.States(),
-		"forwardPorts":  map[string]any{"server": rt.fwdServer.Listening(), "client": rt.fwdClient.Listening()},
+		"forwardPorts":  map[string]any{"server": rt.fwdServer.Listening(), "client": rt.fwdClient.Listening(), "local": rt.fwdLocal.Ports()},
 		"proxyPorts":    map[string]any{"server": rt.pxServer.Listening(), "client": rt.pxClient.Listening()},
 		"startedAt":     rt.startedAt,
 		"lastApply":     rt.lastApply.Load(),

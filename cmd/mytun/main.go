@@ -99,6 +99,13 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("[mytun] ")
 
+	// A click in the Windows console window would otherwise freeze the whole
+	// program: QuickEdit mark mode blocks writes to stdout until the selection
+	// is cleared. Disable it unconditionally, not just when the window is
+	// hidden -- the visible window is exactly where users click.
+	if switched := sysproxy.DisableQuickEdit(); switched {
+		log.Printf("已关闭控制台快速编辑（点击窗口不会再卡住程序）")
+	}
 	if hideConsole {
 		sysproxy.HideConsole()
 	}

@@ -49,8 +49,15 @@ type ForwardRow struct {
 	TargetHost     string `json:"targetHost"`
 	TargetPort     int    `json:"targetPort"`
 	TargetClientID string `json:"targetClientId"`
+	Network        string `json:"network"` // tcp | udp | both (本机转发专用)
 	Enabled        bool   `json:"enabled"`
 	Note           string `json:"note"`
+}
+
+// AuthUser is one accepted credential for a proxy listener.
+type AuthUser struct {
+	User string `json:"user"`
+	Pass string `json:"pass"`
 }
 
 // ProxyRow is one mixed proxy listener.
@@ -61,9 +68,10 @@ type ProxyRow struct {
 	ListenPort     int    `json:"listenPort"`
 	NetworkMode    string `json:"networkMode"`
 	TargetClientID string `json:"targetClientId"`
-	UseAuth        bool   `json:"useAuth"`
-	User           string `json:"user"`
-	Pass           string `json:"pass"`
+	UseAuth        bool       `json:"useAuth"`
+	User           string     `json:"user"`
+	Pass           string     `json:"pass"`
+	AuthUsers      []AuthUser `json:"authUsers"`
 	AllowIPs       string `json:"allowIps"`
 	DenyIPs        string `json:"denyIps"`
 	Enabled        bool   `json:"enabled"`
@@ -132,12 +140,12 @@ func (s *Store) migrate() error {
 			password TEXT, client_id TEXT, sni TEXT, enabled INTEGER, created_at INTEGER)`,
 		`CREATE TABLE IF NOT EXISTS forwards (
 			id TEXT PRIMARY KEY, role TEXT, listen_host TEXT, listen_port INTEGER,
-			target_host TEXT, target_port INTEGER, target_client_id TEXT,
+			target_host TEXT, target_port INTEGER, target_client_id TEXT, network TEXT,
 			enabled INTEGER, note TEXT, created_at INTEGER)`,
 		`CREATE TABLE IF NOT EXISTS proxies (
 			id TEXT PRIMARY KEY, role TEXT, listen_host TEXT, listen_port INTEGER,
 			network_mode TEXT, target_client_id TEXT, use_auth INTEGER, user TEXT,
-			pass TEXT, allow_ips TEXT, deny_ips TEXT, enabled INTEGER, note TEXT, created_at INTEGER)`,
+			pass TEXT, allow_ips TEXT, deny_ips TEXT, enabled INTEGER, note TEXT, created_at INTEGER, auth_users TEXT)`,
 		`CREATE TABLE IF NOT EXISTS audit (
 			id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, module TEXT, source TEXT,
 			target TEXT, action TEXT, network_mode TEXT, bytes_up INTEGER, bytes_down INTEGER,
@@ -147,6 +155,17 @@ func (s *Store) migrate() error {
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
 			return fmt.Errorf("store: migrate: %w (%s)", err, q[:40])
+		}
+	}
+	// Columns added after the first release. ADD COLUMN is not idempotent, so a
+	// database that already has them reports "duplicate column name" -- that is
+	// success, not a failure.
+	for _, q := range []string{
+		`ALTER TABLE forwards ADD COLUMN network TEXT`,
+		`ALTER TABLE proxies ADD COLUMN auth_users TEXT`,
+	} {
+		if _, err := s.db.Exec(q); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return fmt.Errorf("store: migrate: %w (%s)", err, q)
 		}
 	}
 	return nil
@@ -285,7 +304,7 @@ func (s *Store) DeleteClient(id string) error {
 
 // Forwards lists port mappings.
 func (s *Store) Forwards() ([]ForwardRow, error) {
-	rows, err := s.db.Query(`SELECT id,role,listen_host,listen_port,target_host,target_port,target_client_id,enabled,note FROM forwards ORDER BY created_at`)
+	rows, err := s.db.Query(`SELECT id,role,listen_host,listen_port,target_host,target_port,target_client_id,COALESCE(network,''),enabled,note FROM forwards ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -293,7 +312,7 @@ func (s *Store) Forwards() ([]ForwardRow, error) {
 	var out []ForwardRow
 	for rows.Next() {
 		var r ForwardRow
-		if err := rows.Scan(&r.ID, &r.Role, &r.ListenHost, &r.ListenPort, &r.TargetHost, &r.TargetPort, &r.TargetClientID, &r.Enabled, &r.Note); err != nil {
+		if err := rows.Scan(&r.ID, &r.Role, &r.ListenHost, &r.ListenPort, &r.TargetHost, &r.TargetPort, &r.TargetClientID, &r.Network, &r.Enabled, &r.Note); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -309,12 +328,12 @@ func (s *Store) UpsertForward(r ForwardRow) error {
 	if r.Role == "" {
 		r.Role = "server"
 	}
-	_, err := s.db.Exec(`INSERT INTO forwards(id,role,listen_host,listen_port,target_host,target_port,target_client_id,enabled,note,created_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?)
+	_, err := s.db.Exec(`INSERT INTO forwards(id,role,listen_host,listen_port,target_host,target_port,target_client_id,network,enabled,note,created_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET role=excluded.role,listen_host=excluded.listen_host,listen_port=excluded.listen_port,
 		target_host=excluded.target_host,target_port=excluded.target_port,target_client_id=excluded.target_client_id,
-		enabled=excluded.enabled,note=excluded.note`,
-		r.ID, r.Role, r.ListenHost, r.ListenPort, r.TargetHost, r.TargetPort, r.TargetClientID, r.Enabled, r.Note, time.Now().UnixMilli())
+		network=excluded.network,enabled=excluded.enabled,note=excluded.note`,
+		r.ID, r.Role, r.ListenHost, r.ListenPort, r.TargetHost, r.TargetPort, r.TargetClientID, r.Network, r.Enabled, r.Note, time.Now().UnixMilli())
 	return err
 }
 
@@ -328,7 +347,7 @@ func (s *Store) DeleteForward(id string) error {
 
 // Proxies lists mixed proxy listeners.
 func (s *Store) Proxies() ([]ProxyRow, error) {
-	rows, err := s.db.Query(`SELECT id,role,listen_host,listen_port,network_mode,target_client_id,use_auth,user,pass,allow_ips,deny_ips,enabled,note FROM proxies ORDER BY created_at`)
+	rows, err := s.db.Query(`SELECT id,role,listen_host,listen_port,network_mode,target_client_id,use_auth,user,pass,allow_ips,deny_ips,enabled,note,COALESCE(auth_users,'') FROM proxies ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -336,9 +355,13 @@ func (s *Store) Proxies() ([]ProxyRow, error) {
 	var out []ProxyRow
 	for rows.Next() {
 		var r ProxyRow
+		var authUsers string
 		if err := rows.Scan(&r.ID, &r.Role, &r.ListenHost, &r.ListenPort, &r.NetworkMode, &r.TargetClientID,
-			&r.UseAuth, &r.User, &r.Pass, &r.AllowIPs, &r.DenyIPs, &r.Enabled, &r.Note); err != nil {
+			&r.UseAuth, &r.User, &r.Pass, &r.AllowIPs, &r.DenyIPs, &r.Enabled, &r.Note, &authUsers); err != nil {
 			return nil, err
+		}
+		if authUsers != "" {
+			_ = json.Unmarshal([]byte(authUsers), &r.AuthUsers)
 		}
 		out = append(out, r)
 	}
@@ -356,14 +379,18 @@ func (s *Store) UpsertProxy(r ProxyRow) error {
 	if r.NetworkMode == "" {
 		r.NetworkMode = "local"
 	}
-	_, err := s.db.Exec(`INSERT INTO proxies(id,role,listen_host,listen_port,network_mode,target_client_id,use_auth,user,pass,allow_ips,deny_ips,enabled,note,created_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	var authJSON []byte
+	if len(r.AuthUsers) > 0 {
+		authJSON, _ = json.Marshal(r.AuthUsers)
+	}
+	_, err := s.db.Exec(`INSERT INTO proxies(id,role,listen_host,listen_port,network_mode,target_client_id,use_auth,user,pass,allow_ips,deny_ips,enabled,note,created_at,auth_users)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET role=excluded.role,listen_host=excluded.listen_host,listen_port=excluded.listen_port,
 		network_mode=excluded.network_mode,target_client_id=excluded.target_client_id,use_auth=excluded.use_auth,
 		user=excluded.user,pass=excluded.pass,allow_ips=excluded.allow_ips,deny_ips=excluded.deny_ips,
-		enabled=excluded.enabled,note=excluded.note`,
+		enabled=excluded.enabled,note=excluded.note,auth_users=excluded.auth_users`,
 		r.ID, r.Role, r.ListenHost, r.ListenPort, r.NetworkMode, r.TargetClientID, r.UseAuth, r.User, r.Pass,
-		r.AllowIPs, r.DenyIPs, r.Enabled, r.Note, time.Now().UnixMilli())
+		r.AllowIPs, r.DenyIPs, r.Enabled, r.Note, time.Now().UnixMilli(), string(authJSON))
 	return err
 }
 

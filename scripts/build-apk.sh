@@ -10,9 +10,26 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SKILL_SDKS="${MYTUN_ANDROID_SDKS:-/data/dsh/.dsh/skills/flutter-android-build}"
+# The toolchain lives under a skill directory whose name has changed once
+# already; probe the known locations instead of hard-failing.
+if [ -n "${MYTUN_ANDROID_SDKS:-}" ]; then
+	SKILL_SDKS="$MYTUN_ANDROID_SDKS"
+else
+	SKILL_SDKS=""
+	for cand in 		/data/dsh/.dsh/skills/openwrt-dev-flutter-android-build 		/data/dsh/.dsh/skills/flutter-android-build; do
+		if [ -d "$cand/sdks/android-sdk" ]; then
+			SKILL_SDKS="$cand"
+			break
+		fi
+	done
+	[ -n "$SKILL_SDKS" ] || { echo "!! Android SDK not found (set MYTUN_ANDROID_SDKS)" >&2; exit 1; }
+fi
 GOHOME="${MYTUN_GOHOME:-/data/dsh/go-sdk/go}"
-GRADLE_BIN="${MYTUN_GRADLE:-$SKILL_SDKS/gradle-home/wrapper/dists/gradle-8.10.2-bin/e0thjr3we83usdufs66z371ne/gradle-8.10.2/bin/gradle}"
+GRADLE_BIN="${MYTUN_GRADLE:-}"
+if [ -z "$GRADLE_BIN" ]; then
+	GRADLE_BIN="$(ls "$SKILL_SDKS"/gradle-home/wrapper/dists/gradle-*/[a-z0-9]*/gradle-*/bin/gradle 2>/dev/null | head -1)"
+fi
+[ -n "$GRADLE_BIN" ] || { echo "!! gradle not found under $SKILL_SDKS/gradle-home" >&2; exit 1; }
 NDK="${MYTUN_NDK:-$SKILL_SDKS/sdks/android-sdk/ndk/26.3.11579264}"
 TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
