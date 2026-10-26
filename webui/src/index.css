@@ -296,16 +296,16 @@ html.dark {
 }
 
 .bt-main .grid.xl\:grid-cols-3 {
-  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(var(--bt-grid-min, 360px), 1fr));
 }
 
 .bt-main .grid.xl\:grid-cols-2 {
-  grid-template-columns: repeat(auto-fit, minmax(520px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(var(--bt-grid-min, 520px), 1fr));
 }
 
 @media (min-width: 1920px) {
   .bt-main .grid.xl\:grid-cols-3 {
-    grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(var(--bt-grid-min, 420px), 1fr));
   }
 }
 
@@ -319,7 +319,7 @@ html.dark {
   }
 
   .bt-main .grid.xl\:grid-cols-3 {
-    grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(var(--bt-grid-min, 460px), 1fr));
   }
 }
 
@@ -1040,7 +1040,7 @@ html.dark .el-alert--error.is-light .el-alert__title {
 /* Card grids should not stretch a single card across the viewport. */
 .bt-card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(430px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(var(--bt-grid-min, 430px), 1fr));
   gap: 1rem;
 }
 
@@ -1224,9 +1224,131 @@ html.dark .el-table {
     display: none !important;
   }
 
+  /* One compact row: the desktop header wrapped onto two lines on a phone and
+     ate a quarter of the screen. */
   .bt-header {
-    padding-left: 12px;
-    padding-right: 12px;
+    padding: 6px 10px;
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+
+  .bt-header .bt-logo {
+    font-size: 15px;
+  }
+
+  .bt-header .w-8 {
+    width: 26px;
+    height: 26px;
+  }
+
+  /* Keep only the status dot of the tunnel chip; the words do not fit. */
+  .bt-xray-chip {
+    padding: 2px 8px;
+    font-size: 11px;
+  }
+
+  .bt-xray-chip > span:not(.bt-dot) {
+    display: none;
+  }
+
+  .bt-theme-toggle,
+  .bt-locale-toggle {
+    width: 30px;
+    height: 30px;
+    font-size: 12px;
+    padding: 0;
+  }
+
+  .bt-header .el-button.is-circle {
+    width: 30px;
+    height: 30px;
+  }
+
+  .bt-unsaved {
+    display: none;
+  }
+
+  /* A single wide element used to make the whole document scroll sideways,
+     which pushed the fixed tab bar off screen. */
+  html,
+  body {
+    overflow-x: hidden;
+    max-width: 100%;
+  }
+
+  /* Multi-column form grids do not fit a phone; stack them. */
+  .bt-main .grid.grid-cols-2,
+  .bt-main .grid.grid-cols-3 {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .bt-main .el-input,
+  .bt-main .el-input-number,
+  .bt-main .el-select,
+  .bt-main .el-textarea {
+    width: 100% !important;
+  }
+
+  /* Stack label above the control: side-by-side labels plus a full width input
+     is what pushed the cards past the screen edge. */
+  .bt-main .el-form-item {
+    display: block !important;
+    min-width: 0;
+  }
+
+  .bt-main .el-form-item__label {
+    width: auto !important;
+    max-width: 100%;
+    text-align: left !important;
+    padding: 0 0 4px !important;
+    line-height: 1.3;
+  }
+
+  .bt-main .el-form-item__content {
+    margin-left: 0 !important;
+    flex: 1 1 auto;
+    min-width: 0 !important;
+    width: 100%;
+  }
+
+  .bt-main .el-card,
+  .bt-card,
+  .bt-param-row {
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+
+  .bt-main .grid > * {
+    min-width: 0;
+  }
+
+  /* Tunnel rows: field per line instead of a wrapped flex row. */
+  .bt-param-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .bt-param-row > .el-form-item {
+    width: 100% !important;
+  }
+
+  /* Tables scroll horizontally inside their card instead of stretching it. */
+  .bt-main .el-table {
+    max-width: 100%;
+  }
+
+  /* The desktop grid demands 430px per column, which is wider than a phone
+     screen and pushed the whole page sideways. */
+  .bt-card-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  /* Every content grid on desktop asks for 360-520px per column; on a phone that
+     is wider than the screen, so let them collapse instead. */
+  :root,
+  .bt-app-shell {
+    --bt-grid-min: 0px;
   }
 
   .bt-shell-body {
