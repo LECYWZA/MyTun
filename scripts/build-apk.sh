@@ -72,6 +72,22 @@ if [ ! -f "$KEYSTORE" ]; then
 fi
 export MYTUN_KEYSTORE="$KEYSTORE" MYTUN_KS_PASS=android MYTUN_KEY_ALIAS=mytun MYTUN_KEY_PASS=android
 
+# Optional: squeeze the native cores with UPX. Off by default because the gain
+# over the zip's own deflate is small (12.4MB -> 4.0MB packed vs 4.7MB deflated)
+# and UPX rewrites the ELF into a self-unpacking stub without PT_INTERP/DT_NEEDED,
+# which the Android runtime does not need here (the core is exec'd, not dlopen'd)
+# but still is a difference worth opting into deliberately.
+if [ "${MYTUN_UPX_ANDROID:-0}" = "1" ]; then
+	UPXBIN="${MYTUN_UPX:-$(command -v upx || true)}"
+	if [ -n "$UPXBIN" ] && [ -x "$UPXBIN" ]; then
+		echo "== packing android cores with upx =="
+		for so in android/app/src/main/jniLibs/*/libmytuncore.so; do
+			[ -f "$so" ] || continue
+			"$UPXBIN" --best -q "$so" >/dev/null && echo "   packed $(basename "$(dirname "$so")")"
+		done
+	fi
+fi
+
 echo "== gradle assembleRelease =="
 cd "$ROOT/android"
 "$GRADLE_BIN" --no-daemon -I "$SKILL_SDKS/templates/init.gradle" assembleRelease "$@"
