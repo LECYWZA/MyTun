@@ -1344,11 +1344,24 @@ html.dark .el-table {
     grid-template-columns: minmax(0, 1fr) !important;
   }
 
-  /* Every content grid on desktop asks for 360-520px per column; on a phone that
-     is wider than the screen, so let them collapse instead. */
+  /* Every content grid on desktop asks for 360-520px per column. With a 0px
+     minimum the browser happily fits two of them side by side on a phone, which
+     squeezed the chat pane and the overview cards, so force one column. */
   :root,
   .bt-app-shell {
     --bt-grid-min: 0px;
+  }
+
+  .bt-main .grid.xl\:grid-cols-2,
+  .bt-main .grid.xl\:grid-cols-3,
+  .bt-main .grid.xl\:grid-cols-4 {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Toolbars must wrap instead of running off the screen. Wrapping only kicks
+     in when the row would overflow, so icon+label rows are unaffected. */
+  .bt-main .flex {
+    flex-wrap: wrap;
   }
 
   .bt-shell-body {
