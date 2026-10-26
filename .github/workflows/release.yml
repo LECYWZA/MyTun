@@ -47,6 +47,11 @@ jobs:
           sudo install -m755 /tmp/upx-4.2.4-amd64_linux/upx /usr/local/bin/upx
           upx --version | head -1
 
+      - name: Install frontend dependencies
+        working-directory: webui
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
       - name: Install Android NDK
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \

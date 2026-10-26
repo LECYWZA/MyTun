@@ -19,6 +19,10 @@ echo "== clean =="
 rm -f "$DIST"/mytun-linux-amd64 "$DIST"/mytun-linux-arm64 "$DIST"/mytun-windows-amd64.exe "$DIST"/mytun-darwin-arm64
 
 echo "== frontend =="
+if [ ! -d webui/node_modules ]; then
+	echo "  installing frontend dependencies"
+	( cd webui && if [ -f package-lock.json ]; then npm ci >/dev/null; else npm install >/dev/null; fi )
+fi
 ( cd webui && npm run build >/dev/null )
 
 build() {
