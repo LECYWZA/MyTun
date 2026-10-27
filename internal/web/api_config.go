@@ -1,6 +1,7 @@
 package web
 
 import (
+	"net"
 	"errors"
 	"fmt"
 	"encoding/json"
@@ -509,6 +510,59 @@ func (s *Server) handleRevealSecret(w http.ResponseWriter, r *http.Request) {
 		resp["authUsers"] = accts
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleConsoleListen reports and changes where the console itself listens.
+// The change is applied live: the new listener is opened before the old one is
+// closed, so a busy port leaves things exactly as they were.
+func (s *Server) handleConsoleListen(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		// Report the address we are actually bound to; a wildcard bind comes
+		// back as [::] or 0.0.0.0, which the UI shows as "all interfaces".
+		addr := s.Addr()
+		host, port := "", ""
+		if h, p, err := net.SplitHostPort(addr); err == nil {
+			host, port = h, p
+			if host == "::" || host == "[::]" {
+				host = "0.0.0.0"
+			}
+		}
+		writeJSON(w, 200, map[string]any{"host": host, "port": port, "addr": addr})
+		return
+	}
+	var body struct {
+		Host string `json:"host"`
+		Port *int   `json:"port"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, 400, map[string]any{"error": "bad json"})
+		return
+	}
+	if body.Port == nil {
+		writeJSON(w, 400, map[string]any{"error": "port required"})
+		return
+	}
+	port := *body.Port
+	if port < 1 || port > 65535 {
+		writeJSON(w, 400, map[string]any{"error": "端口必须介于 1-65535"})
+		return
+	}
+	host := strings.TrimSpace(body.Host)
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	if ip := net.ParseIP(host); ip == nil && host != "localhost" {
+		writeJSON(w, 400, map[string]any{"error": "监听地址必须是 IP 或 localhost"})
+		return
+	}
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+	if err := s.Rebind(addr); err != nil {
+		writeJSON(w, 200, map[string]any{"ok": false, "error": "无法监听 " + addr + ": " + err.Error(), "addr": s.Addr()})
+		return
+	}
+	_ = s.store.SetSetting("web_host", host)
+	_ = s.store.SetSetting("web_port", strconv.Itoa(port))
+	writeJSON(w, 200, map[string]any{"ok": true, "addr": addr, "host": host, "port": port})
 }
 
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {

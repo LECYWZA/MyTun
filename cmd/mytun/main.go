@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"strconv"
 	"os/signal"
 	"path/filepath"
 	goruntime "runtime"
@@ -38,6 +39,9 @@ func main() {
 	// Loopback by default: the console holds the tunnel passwords. Pass
 	// --host 0.0.0.0 explicitly to expose it on the LAN.
 	webHost := "127.0.0.1"
+	// Track whether the operator passed the flag explicitly: only then does the
+	// command line override the address saved from the console UI.
+	hostFlagSet, portFlagSet := false, false
 	autoStart := true
 	generateOnly := false
 	useTLS := false
@@ -67,11 +71,13 @@ func main() {
 		case "--port":
 			if i+1 < len(args) {
 				fmt.Sscanf(args[i+1], "%d", &webPort)
+				portFlagSet = true
 				i++
 			}
 		case "--host":
 			if i+1 < len(args) {
 				webHost = args[i+1]
+				hostFlagSet = true
 				i++
 			}
 		case "--dns":
@@ -148,6 +154,20 @@ func main() {
 	console, err := web.New(web.Options{Store: st, Runtime: rt, Log: collector, DataDir: dataDir})
 	if err != nil {
 		log.Fatalf("初始化控制台失败: %v", err)
+	}
+	// A saved console address wins over the built-in default, so the value set in
+	// the UI survives a restart however the program was launched.
+	if !hostFlagSet {
+		if v := st.GetSetting("web_host", ""); v != "" {
+			webHost = v
+		}
+	}
+	if !portFlagSet {
+		if v := st.GetSetting("web_port", ""); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 && n < 65536 {
+				webPort = n
+			}
+		}
 	}
 	addr := net.JoinHostPort(webHost, fmt.Sprint(webPort))
 	if useTLS {
@@ -275,6 +295,64 @@ func defaultDataDir() string {
 	return "./data"
 }
 
+// isLoopbackBind reports whether addr only accepts local connections.
+func isLoopbackBind(host string) bool {
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return host == "" // empty means all interfaces in net.Listen
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return host == "localhost"
+	}
+	return ip.IsLoopback()
+}
+
+// localIPv4s lists real LAN addresses. Container/bridge/VPN interfaces are
+// skipped: on a host with Docker installed they otherwise flood the banner with
+// a dozen unusable 172.17/172.18 style addresses.
+func localIPv4s() []string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, ifc := range ifaces {
+		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		name := strings.ToLower(ifc.Name)
+		skip := false
+		for _, prefix := range []string{"docker", "veth", "br-", "virbr", "vmnet", "tun", "tap", "utun", "zt", "wg"} {
+			if strings.HasPrefix(name, prefix) {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			continue
+		}
+		addrs, err := ifc.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			ipn, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			v4 := ipn.IP.To4()
+			if v4 == nil || v4.IsLoopback() || v4.IsLinkLocalUnicast() {
+				continue
+			}
+			out = append(out, v4.String())
+		}
+		if len(out) >= 3 {
+			break
+		}
+	}
+	return out
+}
+
 func randomPassword() string {
 	const alphabet = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 	b := make([]byte, 16)
@@ -290,10 +368,6 @@ func randomPassword() string {
 }
 
 func printBanner(host string, port int, dataDir, dbPath string, st *store.Store, rt *runtime.Runtime, useTLS bool) {
-	displayHost := host
-	if host == "0.0.0.0" || host == "" || host == "::" {
-		displayHost = "127.0.0.1"
-	}
 	fmt.Println()
 	fmt.Println("  ███╗   ███╗██╗   ██╗████████╗██╗   ██╗███╗   ██╗")
 	fmt.Println("  ████╗ ████║╚██╗ ██╔╝╚══██╔══╝██║   ██║████╗  ██║")
@@ -306,7 +380,20 @@ func printBanner(host string, port int, dataDir, dbPath string, st *store.Store,
 	if useTLS {
 		scheme = "https"
 	}
-	fmt.Printf("  控制台:   %s://%s:%d\n", scheme, displayHost, port)
+	// Show what is actually bound, plus a usable URL for every reachable address.
+	// Printing 127.0.0.1 while listening on 0.0.0.0 used to make the console look
+	// loopback-only.
+	bindDesc := host
+	if bindDesc == "" {
+		bindDesc = "0.0.0.0"
+	}
+	fmt.Printf("  监听地址: %s（%s）\n", bindDesc, map[bool]string{true: "仅本机可访问", false: "局域网/公网可访问"}[isLoopbackBind(host)])
+	fmt.Printf("  本机访问: %s://127.0.0.1:%d\n", scheme, port)
+	if !isLoopbackBind(host) {
+		for _, ip := range localIPv4s() {
+			fmt.Printf("  局域网:   %s://%s:%d\n", scheme, ip, port)
+		}
+	}
 	fmt.Printf("  用户名:   %s\n", st.GetSetting("web_user", "admin"))
 	fmt.Printf("  数据目录: %s\n", dataDir)
 	fmt.Printf("  数据库:   %s\n", dbPath)

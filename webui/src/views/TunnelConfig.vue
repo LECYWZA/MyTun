@@ -161,6 +161,31 @@
       </div>
     </div>
 
+    <div class="bt-card p-5">
+      <div class="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <div class="font-medium" style="color: var(--bt-text)">{{ t('config.listenTitle') }}</div>
+          <div class="text-xs mt-1" style="color: var(--bt-text-secondary)">{{ t('config.listenHint') }}</div>
+        </div>
+        <el-button type="primary" :loading="listenSaving" @click="saveListen">{{ t('common.save') }}</el-button>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+        <el-form-item :label="t('config.listenHost')" class="!mb-0">
+          <el-select v-model="listen.host" style="width: 100%">
+            <el-option label="127.0.0.1（仅本机）" value="127.0.0.1" />
+            <el-option label="0.0.0.0（局域网可访问）" value="0.0.0.0" />
+            <el-option label="::（IPv6 全部）" value="::" />
+          </el-select>
+        </el-form-item>
+        <el-form-item :label="t('config.listenPort')" class="!mb-0">
+          <el-input-number v-model="listen.port" :min="1" :max="65535" controls-position="right" style="width: 100%" />
+        </el-form-item>
+      </div>
+      <div class="text-xs mt-2" style="color: var(--bt-text-muted)">
+        {{ t('config.listenCurrent') }} <code>{{ listen.current || '—' }}</code>
+      </div>
+    </div>
+
     <el-dialog v-model="pwdOpen" :title="t('config.changePassword')" width="420px">
       <el-form label-position="top">
         <el-form-item :label="t('login.username')">
@@ -183,7 +208,7 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Download, Upload } from '@element-plus/icons-vue'
 import { Delete, Plus } from '@element-plus/icons-vue'
@@ -194,11 +219,42 @@ import { t } from '../i18n'
 import { useStore } from '../store'
 
 const store = useStore()
+onMounted(() => { loadListen() })
 const state = store.state
 const saving = ref(false)
 const changing = ref(false)
 const pwdOpen = ref(false)
+const listenSaving = ref(false)
+// Where the console itself listens. Loaded from the API because the address is
+// not part of the tunnel config object.
+const listen = reactive({ host: '127.0.0.1', port: 8899, current: '' })
 const pwd = reactive({ username: state.config.settings?.web_user || 'admin', newPassword: '', confirm: '' })
+
+async function loadListen() {
+  try {
+    const res = await api.consoleListen()
+    listen.current = res.addr || ''
+    if (res.host) listen.host = res.host
+    if (res.port) listen.port = Number(res.port)
+  } catch { /* keep defaults */ }
+}
+
+async function saveListen() {
+  listenSaving.value = true
+  try {
+    const res = await api.setConsoleListen({ host: listen.host, port: Number(listen.port) })
+    if (res.ok === false) {
+      ElMessage.error(res.error || 'failed')
+      return
+    }
+    listen.current = res.addr || ''
+    ElMessage.success(t('config.listenSaved', { addr: res.addr }))
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    listenSaving.value = false
+  }
+}
 
 function openPwdDialog() {
   pwd.username = state.config.settings?.web_user || 'admin'

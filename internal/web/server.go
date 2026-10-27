@@ -3,6 +3,7 @@
 package web
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/tls"
 	"crypto/rand"
@@ -64,6 +65,7 @@ type Server struct {
 	revMu   sync.Mutex
 	revokedTokens map[string]int64
 
+	srvMu   sync.Mutex
 	srv     *http.Server
 	ln      net.Listener
 	dataDir string
@@ -194,8 +196,89 @@ func (s *Server) Start(addr string) error {
 	return nil
 }
 
+// Rebind moves the console to a new listen address without dropping the
+// response that is currently in flight. The new listener is opened first, so a
+// bad address (port busy) leaves the old one untouched.
+func (s *Server) Rebind(addr string) error {
+	if addr == s.Addr() {
+		return nil
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		// Changing 127.0.0.1:8899 -> 0.0.0.0:8899 conflicts with ourselves: a
+		// wildcard bind cannot coexist with the specific address already held on
+		// the same port. Release the old listener and retry, restoring it if the
+		// new address turns out to be unusable.
+		oldAddr := s.Addr()
+		if oldAddr == "" || portOf(oldAddr) != portOf(addr) {
+			return err
+		}
+		s.srvMu.Lock()
+		oldLn := s.ln
+		s.ln = nil
+		s.srvMu.Unlock()
+		// Close only the listener: that frees the port while the connection that
+		// is currently being answered stays alive.
+		if oldLn != nil {
+			_ = oldLn.Close()
+		}
+		ln, err = net.Listen("tcp", addr)
+		if err != nil {
+			if back, e2 := net.Listen("tcp", oldAddr); e2 == nil {
+				restored := &http.Server{Addr: oldAddr, ReadHeaderTimeout: 15 * time.Second, IdleTimeout: 120 * time.Second}
+				m2 := http.NewServeMux()
+				s.routes(m2)
+				restored.Handler = m2
+				s.srvMu.Lock()
+				s.srv, s.ln = restored, back
+				s.srvMu.Unlock()
+				go func() { _ = restored.Serve(back) }()
+			}
+			return err
+		}
+	}
+	mux := http.NewServeMux()
+	s.routes(mux)
+	newSrv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 15 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	oldSrv := s.srv
+	s.srvMu.Lock()
+	s.srv = newSrv
+	s.ln = ln
+	s.srvMu.Unlock()
+	go func() {
+		if err := newSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("[web] serve: %v", err)
+		}
+	}()
+	if oldSrv != nil {
+		go func() {
+			// Let the caller's response flush before retiring the old server.
+			time.Sleep(800 * time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = oldSrv.Shutdown(ctx)
+		}()
+	}
+	return nil
+}
+
+// portOf extracts the numeric port from a host:port string.
+func portOf(addr string) string {
+	if _, p, err := net.SplitHostPort(addr); err == nil {
+		return p
+	}
+	return ""
+}
+
 // Addr returns the bound address.
 func (s *Server) Addr() string {
+	s.srvMu.Lock()
+	defer s.srvMu.Unlock()
 	if s.ln == nil {
 		return ""
 	}
@@ -228,6 +311,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.Handle("/api/apply", auth(http.HandlerFunc(s.handleApply)))
 	mux.Handle("/api/service/stop", auth(http.HandlerFunc(s.handleServiceStop)))
 	mux.Handle("/api/change-password", auth(http.HandlerFunc(s.handleChangePassword)))
+	mux.Handle("/api/console/listen", auth(http.HandlerFunc(s.handleConsoleListen)))
 	mux.Handle("/api/settings", auth(http.HandlerFunc(s.handleSettings)))
 	mux.Handle("/api/servers", auth(http.HandlerFunc(s.handleServers)))
 	mux.Handle("/api/servers/", auth(http.HandlerFunc(s.handleServers)))
